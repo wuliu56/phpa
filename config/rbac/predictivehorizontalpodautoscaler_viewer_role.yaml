@@ -1,0 +1,27 @@
+# permissions for end users to view predictivehorizontalpodautoscalers.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: clusterrole
+    app.kubernetes.io/instance: predictivehorizontalpodautoscaler-viewer-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: autoscaling
+    app.kubernetes.io/part-of: autoscaling
+    app.kubernetes.io/managed-by: kustomize
+  name: predictivehorizontalpodautoscaler-viewer-role
+rules:
+- apiGroups:
+  - autoscaling.myw.domain
+  resources:
+  - predictivehorizontalpodautoscalers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - autoscaling.myw.domain
+  resources:
+  - predictivehorizontalpodautoscalers/status
+  verbs:
+  - get

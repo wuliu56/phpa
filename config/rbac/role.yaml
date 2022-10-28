@@ -1,0 +1,33 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  name: manager-role
+rules:
+- apiGroups:
+  - autoscaling.myw.domain
+  resources:
+  - predictivehorizontalpodautoscalers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - autoscaling.myw.domain
+  resources:
+  - predictivehorizontalpodautoscalers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - autoscaling.myw.domain
+  resources:
+  - predictivehorizontalpodautoscalers/status
+  verbs:
+  - get
+  - patch
+  - update

@@ -1,0 +1,13 @@
+apiVersion: autoscaling.myw.domain/v1
+kind: PredictiveHorizontalPodAutoscaler
+metadata:
+  name: predictivehorizontalpodautoscaler-sample
+spec:
+  scaleTargetRef:
+    kind: Deployment
+    name: nginx
+    apiVersion: apps/v1
+  maxReplicas: 40
+  metrics:
+    name: cpu
+    targetAverageUtilization: 30

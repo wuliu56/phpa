@@ -1,0 +1,221 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.9.2
+  creationTimestamp: null
+  name: predictivehorizontalpodautoscalers.autoscaling.myw.domain
+spec:
+  group: autoscaling.myw.domain
+  names:
+    kind: PredictiveHorizontalPodAutoscaler
+    listKind: PredictiveHorizontalPodAutoscalerList
+    plural: predictivehorizontalpodautoscalers
+    singular: predictivehorizontalpodautoscaler
+  scope: Namespaced
+  versions:
+  - name: v1
+    schema:
+      openAPIV3Schema:
+        description: PredictiveHorizontalPodAutoscaler is the Schema for the predictivehorizontalpodautoscalers
+          API
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PredictiveHorizontalPodAutoscalerSpec defines the desired
+              state of PredictiveHorizontalPodAutoscaler
+            properties:
+              alpha:
+                description: Alpha defines a fixed alpha parameter for the DES algorithm.
+                  If not explicitly specified, an auto adjustment will be applied
+                  to alpha according to collected metrics.
+                type: string
+              cpuInitializationPeriod:
+                description: CpuInitializationPeriod defines the period seconds after
+                  the pod starting when the pod is assumed being initialized, and
+                  thus any transition into readiness is the first one.
+                type: string
+              delayOfInitialReadinessStatus:
+                description: DelayOfInitialReadinessStatus defines the period seconds
+                  after the pod starting when the pod is assumed to be still unready
+                  after last transition into unreadiness.
+                type: string
+              maxReplicas:
+                description: MaxReplicas is the upper limit for the number of replicas
+                  to which the autoscaler can scale up.
+                format: int32
+                minimum: 1
+                type: integer
+              metrics:
+                description: Metrics contains the specifications for which to use
+                  to to calculate the desired replica count. Here multi-metrics haven't
+                  been applied, and only resource metrics are supported.
+                properties:
+                  name:
+                    description: Name is the name of the resource in question.
+                    type: string
+                  targetAverageUtilization:
+                    description: TargetAverageUtilization is the target value of the
+                      average of the resource metric across all relevant pods, represented
+                      as a percentage of the requested value of the resource for the
+                      pods.
+                    format: int32
+                    type: integer
+                  targetAverageValue:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: TargetAverageValue is the target value of the resource
+                      metric across all relevant pods, as a raw value.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                required:
+                - name
+                type: object
+              minReplicas:
+                default: 1
+                description: MinReplicas is the lower limit for the number of replicas
+                  to which the autoscaler can scale down. It defaults to 1 pod.
+                format: int32
+                type: integer
+              monitorWindowIntervalNum:
+                default: 20
+                description: MonitorWindowIntervalNum refers to the interval number
+                  of the monitor window used for pod resource prediction.
+                format: int32
+                minimum: 2
+                type: integer
+              scaleDownStabilizationWindowSeconds:
+                default: 120
+                description: ScaleDownStabilizationWindowSeconds refers to the minimum
+                  interval(second) between pod scaling down.
+                format: int32
+                minimum: 1
+                type: integer
+              scaleHistoryLimit:
+                default: 20
+                description: ScaleHistoryLimit refers to the limit for the number
+                  of scaling history records. It defaults to 50 pieces.
+                format: int32
+                minimum: 0
+                type: integer
+              scaleTargetRef:
+                description: ScaleTargetRef refers to the workload resource to be
+                  scaled.
+                properties:
+                  apiVersion:
+                    description: API version of the referent
+                    type: string
+                  kind:
+                    description: Kind of the referent
+                    type: string
+                  name:
+                    description: Name of the referent
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              tolerance:
+                description: Tolerance decides whether to scale pods if resource usage
+                  isn't that larger than the threshold.
+                type: string
+            required:
+            - maxReplicas
+            - scaleTargetRef
+            type: object
+          status:
+            description: PredictiveHorizontalPodAutoscalerStatus defines the observed
+              state of PredictiveHorizontalPodAutoscaler
+            properties:
+              currentReplicas:
+                description: CurrentReplicas is current number of replicas of pods
+                  manager by this autoscaler, as last seen by the autoscaler.
+                format: int32
+                type: integer
+              desiredReplicas:
+                description: desiredReplicas is the desired number of replicas of
+                  pods managered by this autoscaler.
+                format: int32
+                type: integer
+              lastMonitorTime:
+                description: LastMonitorTime refers to the time when the last metrics
+                  are fetched and used to update PredictiveHorizontalPodAutoscalerStatus
+                format: date-time
+                type: string
+              lastScaleTime:
+                description: lastScaleTime is the last time the HorizontalPodAutoscaler
+                  scaled the number of pods, used by the autoscaler to control the
+                  scaling frequency.
+                format: date-time
+                type: string
+              metricsList:
+                description: MetricsList contains the collected metrics within the
+                  monitor window.
+                items:
+                  properties:
+                    currentUtilization:
+                      description: CurrentUtilization is the current value of the
+                        resource metric across all relevant pods, represented as a
+                        percentage of the requested value of the resource for the
+                        pods. It will only be present if `targetAverageUtilization`
+                        was set in the corresponding metric specification.
+                      format: int32
+                      type: integer
+                    currentValue:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      description: CurrentAverageUtilization is the current value
+                        of the resource metric across all relevant pods, represented
+                        as the raw value of the requested value of the resource for
+                        the pods. It will always be present.
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    name:
+                      description: Name is the name of the resource in question.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              scaleEventsList:
+                description: ScaleEventsList contains the recent scaling events.
+                items:
+                  description: ScaleEvent records the information of a scaling event,
+                    including its happening time and desired replicas.
+                  properties:
+                    replicas:
+                      description: Replicas is the replica count of a scaling.
+                      format: int32
+                      type: integer
+                    time:
+                      description: HappeningTime is the time when a scaling happens.
+                      format: date-time
+                      type: string
+                  required:
+                  - replicas
+                  - time
+                  type: object
+                type: array
+            required:
+            - currentReplicas
+            - desiredReplicas
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
