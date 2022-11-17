@@ -24,6 +24,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/sets"
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
 	autoscalingv1 "myw.domain/autoscaling/api/v1"
@@ -57,6 +59,8 @@ type PredictiveHorizontalPodAutoscalerReconciler struct {
 //+kubebuilder:rbac:groups=autoscaling.myw.domain,resources=predictivehorizontalpodautoscalers/finalizers,verbs=update
 //+kubebuilder:rabc:groups=apps,resources=deployments,verbs=get;list;update
 //+kubebuilder:rabc:groups=apps,resources=deployments/status,verbs=get
+//+kubebuilder:rabc:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;update
+//+kubebuilder:rabc:groups=autoscaling.k8s.io,resources=verticalpodautoscalers/status,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -93,40 +97,6 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 	//desiredReplicas := status.DesiredReplicas
 	lastScaleTime := status.LastScaleTime
 	//metricsList := status.MetricsList
-
-	//get the selector of the given workload(deployment/statefulset) to list the pods
-	/*reference := fmt.Sprintf("%v/%v/%v", scaleTargetRef.Kind, req.Namespace, scaleTargetRef.Name)
-	fmt.Printf("reference: %v \n", reference)
-	targetGV, err := schema.ParseGroupVersion(scaleTargetRef.APIVersion)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("invalid API version in scale target reference: %v", err)
-	}
-	targetGK := schema.GroupKind{
-		Group: targetGV.Group,
-		Kind:  scaleTargetRef.Kind,
-	}
-	fmt.Printf("GVK: %v/%v \n", targetGK.Group, targetGK.Kind)
-
-	gvkmap := r.Scheme.AllKnownTypes()
-	gvlist := []schema.GroupVersion{}
-	for gvk := range gvkmap {
-		gvlist = append(gvlist, gvk.GroupVersion())
-	}
-	for i, v := range gvlist {
-		fmt.Printf("gv %v: %v\n", i, v)
-	}
-	defaultRESTMapper := apimeta.NewDefaultRESTMapper(gvlist)
-	mappings, err := defaultRESTMapper.RESTMappings(targetGK)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("unable to determine resource for scale target reference : %v", err)
-	}
-	var scale k8sautoscalingv1.Scale
-	for _, mapping := range mappings {
-		targetGR := mapping.Resource.GroupResource()
-		r.Get(ctx, req.NamespacedName, &scale, )
-
-	}
-	*/
 
 	//monitorInterval is used to control the rate that the phpa status is updated and the replica count of workload spec is changed
 	monitorInterval := time.Duration(int64(float32(r.MonitorInterval.Nanoseconds()) * 0.9))
@@ -186,6 +156,87 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 		log.Error(err, "unable to determine resource for scale target reference", "targetGVR", targetGVR, "namespace", namespace, "deploymentName", deploymentName)
 		return ctrl.Result{}, err
 	}
+	containers := deployment.Spec.Template.Spec.Containers
+
+	// create vpa resources for the target reference if no vpa exists.
+	var vpa vpav1.VerticalPodAutoscaler
+	vpaName := "vpa-" + deploymentName
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: namespace,
+		Name:      vpaName,
+	}, &vpa); client.IgnoreNotFound(err) != nil {
+		log.Error(err, "unable to get vpa", "vpa", vpaName)
+	}
+	if vpa.Name != vpaName {
+		//create new vpa and vpacheckpoint
+		targetRef := v1.CrossVersionObjectReference{
+			Kind:       scaleTargetRef.Kind,
+			APIVersion: scaleTargetRef.APIVersion,
+			Name:       scaleTargetRef.Name,
+		}
+		updateMode := vpav1.UpdateModeOff
+		vpa = vpav1.VerticalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      vpaName,
+				Namespace: namespace,
+				Labels:    make(map[string]string),
+			},
+			Spec: vpav1.VerticalPodAutoscalerSpec{
+				TargetRef: &targetRef,
+				UpdatePolicy: &vpav1.PodUpdatePolicy{
+					UpdateMode: &updateMode,
+				},
+			},
+		}
+		vpa.ObjectMeta.Labels["generator"] = "phpa" + phpa.Name
+		vpa.SetOwnerReferences([]metav1.OwnerReference{{
+			APIVersion: phpa.APIVersion,
+			Kind:       phpa.Kind,
+			Name:       phpa.Name,
+			UID:        phpa.UID,
+		}})
+		for _, container := range containers {
+			containerScalingMode := vpav1.ContainerScalingModeOff
+			vpa.Spec.ResourcePolicy = &vpav1.PodResourcePolicy{
+				ContainerPolicies: []vpav1.ContainerResourcePolicy{
+					{
+						ContainerName: container.Name,
+						Mode:          &containerScalingMode,
+						//MinAllowed: 	,
+					},
+				},
+			}
+		}
+		if err := r.Create(ctx, &vpa); err != nil {
+			log.Error(err, "unable to create vpa", "vpa", vpaName)
+			return ctrl.Result{}, err
+		}
+		for _, container := range containers {
+			vpacheckpointName := vpaName + "-" + container.Name
+			vpacheckpoint := vpav1.VerticalPodAutoscalerCheckpoint{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vpacheckpointName,
+					Namespace: namespace,
+					Labels:    make(map[string]string),
+				},
+				Spec: vpav1.VerticalPodAutoscalerCheckpointSpec{
+					VPAObjectName: vpaName,
+					ContainerName: container.Name,
+				},
+			}
+			vpacheckpoint.ObjectMeta.Labels["generator"] = "phpa" + phpa.Name
+			vpacheckpoint.SetOwnerReferences([]metav1.OwnerReference{{
+				APIVersion: phpa.APIVersion,
+				Kind:       phpa.Kind,
+				Name:       phpa.Name,
+				UID:        phpa.UID,
+			}})
+			if err := r.Create(ctx, &vpacheckpoint); err != nil {
+				log.Error(err, "unable to create vpacheckpoint", "vpacheckpoint", vpacheckpointName)
+				return ctrl.Result{}, err
+			}
+		}
+	}
 
 	//list the pods for the target resource
 	var podList corev1.PodList
@@ -225,14 +276,14 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 	fmt.Printf("currentDesiredReplicas: %v, currentUsage: %v\n", currentDesiredReplicas, currentUsage)
 	metricStatus := getCurrentMetricStatus(metrics, request, resourceName)
 	constructPHPAMetricsList(&phpa, metricStatus)
-	nextMetricStatus, err := predictNextMetricStatus(&phpa, totalRequest)
+	//nextMetricStatus, err := predictNextMetricStatusByDES(&phpa, request, totalRequest)
+	nextMetricStatus, err := predictNextMetricStatusByADES(&phpa, totalRequest)
 	if err != nil {
 		log.Error(err, "failed to predict next metric status")
 		return ctrl.Result{}, err
 	}
 
 	//calculate desired replicas based on the predicted metric
-	fmt.Printf("variance: %v\n", calcStandardDeviation(phpa.Status.MetricsList))
 	predictedDesiredReplicas := r.predictDesiredReplicas(nextMetricStatus, currentReplicas, int32(len(metrics)), targetMetricSource)
 	fmt.Printf("predictedDesiredReplicas: %v, predictedUsage: %v\n", predictedDesiredReplicas, nextMetricStatus.CurrentValue)
 
@@ -460,9 +511,74 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) recordScaleEvent(phpa *aut
 	}
 }
 
-// predictNextMetricStatus predicts the value and utilization at the next time interval,
-// and returns *autoscalingv1.MetricStatus composed of the information
-func predictNextMetricStatus(phpa *autoscalingv1.PredictiveHorizontalPodAutoscaler, request int64) (*autoscalingv1.MetricStatus, error) {
+func predictNextMetricStatusByADES(phpa *autoscalingv1.PredictiveHorizontalPodAutoscaler, totalRequest int64) (*autoscalingv1.MetricStatus, error) {
+	metricList := phpa.Status.MetricsList
+	if len(metricList) == 0 {
+		return nil, fmt.Errorf("there's no metric provided for prediction")
+	}
+	metricNum := len(phpa.Status.MetricsList)
+	metricName := metricList[0].Name
+	var alpha float64
+	var alphab float64 = 0.2
+	var delta float64 = 0.1
+	var l int32 = 1
+	var n int32 = 2
+	st1 := make([]float64, metricNum)
+	st2 := make([]float64, metricNum)
+	at := make([]float64, metricNum)
+	bt := make([]float64, metricNum)
+	f := make([]float64, metricNum)
+	e := make([]float64, metricNum)
+	st1[0] = float64(metricList[0].CurrentValue.MilliValue())
+	st2[0] = st1[0]
+	at[0] = 2*st1[0] - st2[0]
+	bt[0] = alpha / (1 - alpha) * (st1[0] - st2[0])
+	f[0] = st2[0]
+	e[0] = 0
+	for i := 1; i < metricNum; i++ {
+		f[i] = at[i-1] + bt[i-1]
+		e[i] = f[i] - float64(metricList[i].CurrentValue.MilliValue())
+		if e[i]*e[i-1] <= 0 {
+			l = 1
+		} else {
+			l += 1
+		}
+		if l < n {
+			alpha = alphab
+		} else {
+			alpha = math.Min(alpha+delta, 0.9)
+		}
+		st1[i] = alpha*float64(metricList[i].CurrentValue.MilliValue()) + (1-alpha)*st1[i-1]
+		st2[i] = alpha*st1[i] + (1-alpha)*st2[i-1]
+		at[i] = 2*st1[i] - st2[i]
+		bt[i] = alpha / (1 - alpha) * (st1[i] - st2[i])
+	}
+	nextTotalValue := int64(math.Floor(float64(at[metricNum-1]+bt[metricNum-1]) + 0.5))
+	if nextTotalValue < 0 {
+		nextTotalValue = 0
+	}
+	nextTotalUtilization := int32(math.Floor(100*float64(nextTotalValue)/float64(totalRequest) + 0.5))
+	var nextQuantity *resource.Quantity
+	if metricName == corev1.ResourceCPU {
+		nextQuantity = resource.NewMilliQuantity(nextTotalValue, resource.DecimalSI)
+	}
+	if metricName == corev1.ResourceMemory {
+		nextQuantity = resource.NewMilliQuantity(nextTotalValue, resource.BinarySI)
+	}
+	nextMetricStatus := autoscalingv1.MetricStatus{
+		Name:               metricName,
+		CurrentValue:       nextQuantity,
+		CurrentUtilization: &nextTotalUtilization,
+	}
+	for i, v := range f {
+		fmt.Printf("%vth prediction: %v\n", i, v)
+	}
+	return &nextMetricStatus, nil
+}
+
+// predictNextMetricStatusByDES uses DES to predict the value and utilization at the next time interval,
+// and returns *autoscalingv1.MetricStatus composed of the information.
+func predictNextMetricStatusByDES(phpa *autoscalingv1.PredictiveHorizontalPodAutoscaler, singleRequest int64, totalRequest int64) (*autoscalingv1.MetricStatus, error) {
 	metricList := phpa.Status.MetricsList
 	metricNum := len(phpa.Status.MetricsList)
 	metricName := metricList[0].Name
@@ -477,7 +593,7 @@ func predictNextMetricStatus(phpa *autoscalingv1.PredictiveHorizontalPodAutoscal
 		}
 		alpha = float32(alpha64)
 	} else {
-		alpha = calcAlphaForMetrics(metricList)
+		alpha = calcAlphaForMetrics(metricList, singleRequest)
 	}
 	st1 := make([]float32, metricNum)
 	st2 := make([]float32, metricNum)
@@ -497,7 +613,7 @@ func predictNextMetricStatus(phpa *autoscalingv1.PredictiveHorizontalPodAutoscal
 	if nextTotalValue < 0 {
 		nextTotalValue = 0
 	}
-	nextTotalUtilization := int32(math.Floor(100*float64(nextTotalValue)/float64(request) + 0.5))
+	nextTotalUtilization := int32(math.Floor(100*float64(nextTotalValue)/float64(totalRequest) + 0.5))
 	var nextQuantity *resource.Quantity
 	if metricName == corev1.ResourceCPU {
 		nextQuantity = resource.NewMilliQuantity(nextTotalValue, resource.DecimalSI)
@@ -703,44 +819,31 @@ func constructPHPAMetricsList(phpa *autoscalingv1.PredictiveHorizontalPodAutosca
 }
 
 // calcAlphaForMetrics calculates the alpha applied to resource prediction based on the avsd
-func calcAlphaForMetrics(metrics []autoscalingv1.MetricStatus) float32 {
+func calcAlphaForMetrics(metrics []autoscalingv1.MetricStatus, request int64) float32 {
 	alpha := float32(0.3)
 	return alpha
 }
 
 // calcStandardDeviation calculates the standard deviation of the given slice
-func calcStandardDeviation(metrics []autoscalingv1.MetricStatus) int64 {
+func calcStandardDeviation(metrics []float64) float64 {
 	var variance float64
 	var sum float64
-	milliFlag := true
 	for _, metric := range metrics {
-		if metric.Name == corev1.ResourceMemory {
-			milliFlag = false
-		}
+		sum += metric
 	}
-	if milliFlag {
-		for _, metric := range metrics {
-			sum += float64(metric.CurrentValue.MilliValue())
-		}
-		mean := float64(sum) / float64(len(metrics))
-		for _, metric := range metrics {
-			variance += math.Pow(float64(metric.CurrentValue.MilliValue())-mean, 2)
-		}
-		return int64(math.Sqrt(math.Floor(variance + 0.5)))
-	}
+	mean := sum / float64(len(metrics))
 	for _, metric := range metrics {
-		sum += float64(metric.CurrentValue.Value())
+		variance += math.Pow(metric-mean, 2)
 	}
-	mean := float64(sum) / float64(len(metrics))
-	for _, metric := range metrics {
-		variance += math.Pow(float64(metric.CurrentValue.Value())-mean, 2)
-	}
-	return int64(math.Sqrt(math.Floor(variance + 0.5)))
+	variance /= float64(len(metrics)) - 1
+	return math.Sqrt(variance)
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *PredictiveHorizontalPodAutoscalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&autoscalingv1.PredictiveHorizontalPodAutoscaler{}).
+		Owns(&vpav1.VerticalPodAutoscaler{}).
+		Owns(&vpav1.VerticalPodAutoscalerCheckpoint{}).
 		Complete(r)
 }

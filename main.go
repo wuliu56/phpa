@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	autoscalingv1 "myw.domain/autoscaling/api/v1"
 	"myw.domain/autoscaling/controllers"
 	//+kubebuilder:scaffold:imports
@@ -47,6 +48,8 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(autoscalingv1.AddToScheme(scheme))
+
+	utilruntime.Must(vpav1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 
 	//DefaultRESTMapper used to get mappings from GVK to GVR

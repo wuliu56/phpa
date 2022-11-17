@@ -12,6 +12,8 @@ spec:
     kind: PredictiveHorizontalPodAutoscaler
     listKind: PredictiveHorizontalPodAutoscalerList
     plural: predictivehorizontalpodautoscalers
+    shortNames:
+    - phpa
     singular: predictivehorizontalpodautoscaler
   scope: Namespaced
   versions:
@@ -152,7 +154,7 @@ spec:
                 type: integer
               lastMonitorTime:
                 description: LastMonitorTime refers to the time when the last metrics
-                  are fetched and used to update PredictiveHorizontalPodAutoscalerStatus
+                  are fetched and used to update PredictiveHorizontalPodAutoscalerStatus.
                 format: date-time
                 type: string
               lastScaleTime:

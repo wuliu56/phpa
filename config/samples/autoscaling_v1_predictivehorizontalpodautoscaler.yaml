@@ -7,7 +7,7 @@ spec:
     kind: Deployment
     name: nginx
     apiVersion: apps/v1
-  maxReplicas: 40
+  maxReplicas: 20
   metrics:
     name: cpu
-    targetAverageUtilization: 30
+    targetAverageUtilization: 70

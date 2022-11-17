@@ -169,14 +169,14 @@ type PredictiveHorizontalPodAutoscalerStatus struct {
 	//+optional
 	ScaleEventsList []ScaleEvent `json:"scaleEventsList"`
 
-	//LastMonitorTime refers to the time when the last metrics are fetched and used to update PredictiveHorizontalPodAutoscalerStatus
+	//LastMonitorTime refers to the time when the last metrics are fetched and used to update PredictiveHorizontalPodAutoscalerStatus.
 	//+optional
 	LastMonitorTime *metav1.Time `json:"lastMonitorTime"`
 }
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
-
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=phpa
 // PredictiveHorizontalPodAutoscaler is the Schema for the predictivehorizontalpodautoscalers API
 type PredictiveHorizontalPodAutoscaler struct {
 	metav1.TypeMeta   `json:",inline"`
