@@ -20,11 +20,9 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/sets"
-	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
 	autoscalingv1 "myw.domain/autoscaling/api/v1"
@@ -46,12 +43,204 @@ import (
 type PredictiveHorizontalPodAutoscalerReconciler struct {
 	Config *rest.Config
 	client.Client
-	Scheme                        *runtime.Scheme
+	Scheme *runtime.Scheme
+	// MonitorInterval is used to control the rate that the phpa status is updated
+	// and the replica count of workload spec is changed.
 	MonitorInterval               time.Duration
-	cpuInitializationPeriod       time.Duration
-	delayOfInitialReadinessStatus time.Duration
+	CpuInitializationPeriod       time.Duration
+	DelayOfInitialReadinessStatus time.Duration
+	Tolerance                     float32
+	ScaleHistoryLimit             int32
+}
+
+// ScaleDecisionMaker makes scale decision.
+type ScaleDecisionMaker interface {
+	// Computes desired replicas.
+	computeDesiredReplicas() int32
+	// Compute desired container resource requirements and pod request quantity.
+	computeDesiredResourceRequirements() (map[string]corev1.ResourceRequirements, resource.Quantity)
+}
+
+// HorizontalScaleDecisionMaker only makes horizontal scale decision.
+type HorizontalScaleDecisionMaker struct {
+	pods                          []corev1.Pod
+	metrics                       metricsclient.PodMetricsInfo
+	currentReplicas               int32
+	podRequestMilliValue          int64
+	nextMetricStatus              *autoscalingv1.MetricStatus
+	targetMetricSource            *autoscalingv1.MetricSource
+	cpuInitializationPeriod       *time.Duration
+	delayOfInitialReadinessStatus *time.Duration
 	tolerance                     float32
-	scaleHistoryLimit             int32
+}
+
+// This computes desired replicas based on current status of pods.
+func (h HorizontalScaleDecisionMaker) computeDesiredReplciasByCurrentStatus() (desiredReplicas int32, usage int64) {
+	//Remove metrics from unready and ignored pods.
+	targetResourceName := h.targetMetricSource.Name
+	upperTargetUtilization := h.targetMetricSource.UpperTargetUtilization
+	readyPodCount, unreadyPods, missingPods, ignoredPods := groupPods(h.pods, h.metrics, targetResourceName, *h.cpuInitializationPeriod, *h.delayOfInitialReadinessStatus)
+	removeMetricsForPods(h.metrics, unreadyPods)
+	removeMetricsForPods(h.metrics, ignoredPods)
+
+	usageRatio, _, usage := calcUtilizationUsageRatio(h.metrics, h.podRequestMilliValue, upperTargetUtilization)
+	scaledUpWithUnready := len(unreadyPods) > 0 && usageRatio > 1.0
+
+	// There's no unready pods or missing metrics.
+	if !scaledUpWithUnready && len(missingPods) == 0 {
+		// Difference is smaller than tolerance.
+		// desiredReplicas = currentReplicas
+		if math.Abs(float64(usageRatio)-1.0) <= float64(h.tolerance) {
+			return h.currentReplicas, usage
+		}
+		// desiredReplicas = current usageRatio * readyPodCount
+		return int32(math.Ceil(float64(usageRatio) * float64(readyPodCount))), usage
+	}
+
+	// Assume the metrics for missing and unready pods if any exists.
+	// Missing metric was maximum in case of scaling down,
+	// and zero in case of scaling up.
+	// Metric from unready pod was zero.
+	if len(missingPods) > 0 {
+		if usageRatio < 1.0 {
+			missingPodUtilization := int64(math.Max(100, float64(upperTargetUtilization)))
+			for podName := range missingPods {
+				h.metrics[podName] = metricsclient.PodMetric{Value: missingPodUtilization / 100 * h.podRequestMilliValue}
+			}
+		} else if usageRatio > 1.0 {
+			for podName := range missingPods {
+				h.metrics[podName] = metricsclient.PodMetric{Value: 0}
+			}
+		}
+	}
+	if scaledUpWithUnready {
+		for podName := range unreadyPods {
+			h.metrics[podName] = metricsclient.PodMetric{Value: 0}
+		}
+	}
+
+	// There's unready pods or missing metrics.
+	newUsageRatio, _, _ := calcUtilizationUsageRatio(h.metrics, h.podRequestMilliValue, upperTargetUtilization)
+	// In several special cases,
+	// desiredReplicas = currentReplicas
+	if math.Abs(float64(newUsageRatio)-1.0) <= float64(h.tolerance) || (newUsageRatio > 1.0 && usageRatio < 1.0) || (newUsageRatio < 1.0 && usageRatio > 1.0) {
+		return h.currentReplicas, usage
+	}
+	newReplicas := int32(math.Ceil(float64(newUsageRatio) * float64(len(h.metrics))))
+	if newUsageRatio < 1.0 && newReplicas > h.currentReplicas || (newUsageRatio > 1.0 && newReplicas < h.currentReplicas) {
+		return h.currentReplicas, usage
+	}
+	return newReplicas, usage
+
+}
+
+// This computes desired replicas based on predicted next status of pods.
+func (h HorizontalScaleDecisionMaker) computeDesiredReplciasByPredictedStatus() (desiredReplicas int32) {
+	upperTargetUtilization := h.targetMetricSource.UpperTargetUtilization
+	nextUtilization := h.nextMetricStatus.CurrentUtilization
+	metricLength := len(h.metrics)
+
+	//predict the desired replicas for the upper target utilization
+	nextUsageRatio := float64(nextUtilization) / float64(upperTargetUtilization)
+	desiredReplicas = int32(math.Ceil(nextUsageRatio * float64(metricLength)))
+	if math.Abs(nextUsageRatio-1.0) <= float64(h.tolerance) {
+		return h.currentReplicas
+	}
+	return desiredReplicas
+}
+
+// This computes desired replicas based on both current and predicted status of pods.
+func (h HorizontalScaleDecisionMaker) computeDesiredReplicas() int32 {
+	currentDesiredReplicas, _ := h.computeDesiredReplciasByCurrentStatus()
+	fmt.Printf("current desired replicas: %v\n", currentDesiredReplicas)
+	predictedDesiredReplicas := h.computeDesiredReplciasByPredictedStatus()
+	fmt.Printf("predicted desired replicas: %v\n", predictedDesiredReplicas)
+	if currentDesiredReplicas >= h.currentReplicas && predictedDesiredReplicas > currentDesiredReplicas {
+		return predictedDesiredReplicas
+	}
+	return currentDesiredReplicas
+}
+
+// This computes the desired resource requirements of containers and pod request quantity.
+func (h HorizontalScaleDecisionMaker) computeDesiredResourceRequirements() (map[string]corev1.ResourceRequirements, resource.Quantity) {
+	//currentDesiredReplicas, currentUsage = r.calcDesiredReplicas(podList.Items, metrics, currentReplicas, request, phpa.Spec.Metrics)
+	podSample := h.pods[0]
+	resourceRequirementsMap := make(map[string]corev1.ResourceRequirements)
+	var requestQuantity resource.Quantity
+	if h.targetMetricSource.Name == corev1.ResourceCPU {
+		requestQuantity = *resource.NewMilliQuantity(h.podRequestMilliValue, resource.DecimalSI)
+	} else {
+		requestQuantity = *resource.NewMilliQuantity(h.podRequestMilliValue, resource.BinarySI)
+	}
+	for _, c := range podSample.Spec.Containers {
+		resourceRequirementsMap[c.Name] = c.Resources
+	}
+	return resourceRequirementsMap, requestQuantity
+}
+
+// VerticalScaleDecisionMaker only makes vertical scale decision.
+type VerticalScaleDecisionMaker struct {
+	pods                          []corev1.Pod
+	metrics                       metricsclient.PodMetricsInfo
+	currentReplicas               int32
+	podRequestMilliValue          int64
+	nextMetricStatus              *autoscalingv1.MetricStatus
+	targetMetricSource            *autoscalingv1.MetricSource
+	cpuInitializationPeriod       *time.Duration
+	delayOfInitialReadinessStatus *time.Duration
+	tolerance                     float32
+}
+
+func (v VerticalScaleDecisionMaker) computeDesiredReplicas() int32 {
+	return v.currentReplicas
+}
+
+func (v VerticalScaleDecisionMaker) computeDesiredResourceRequirements() (map[string]corev1.ResourceRequirements, resource.Quantity) {
+	return nil, resource.Quantity{}
+}
+
+type ScaleExecutor interface {
+	// Scale with desired replicas and container resource requirements.
+	// Return true if scaled and false if not.
+	// Also return error.
+	scaleWithDesiredStrategy(int32, map[string]corev1.ResourceRequirements) (bool, error)
+}
+
+type HorizontalScaleExecutor struct {
+	ctx context.Context
+	client.Client
+	deployment                           *appsv1.Deployment
+	currentReplicas                      int32
+	minReplicas                          int32
+	maxReplicas                          int32
+	scaleDownStabilizationWindowDuration *time.Duration
+	lastScaleTime                        *metav1.Time
+}
+
+func (h HorizontalScaleExecutor) scaleWithDesiredStrategy(desiredReplicas int32, desiredResourceRequirements map[string]corev1.ResourceRequirements) (bool, error) {
+	if desiredReplicas == h.currentReplicas {
+		return false, nil
+	} else if desiredReplicas > h.currentReplicas {
+		h.deployment.Spec.Replicas = &desiredReplicas
+		if err := h.Update(h.ctx, h.deployment); err != nil {
+			return true, err
+		}
+		return true, nil
+	} else {
+		ifScale := false
+		if h.lastScaleTime != nil {
+			ifScale = time.Now().After(h.lastScaleTime.Time.Add(*h.scaleDownStabilizationWindowDuration))
+		} else {
+			ifScale = true
+		}
+		if ifScale {
+			h.deployment.Spec.Replicas = &desiredReplicas
+			if err := h.Update(h.ctx, h.deployment); err != nil {
+				return true, err
+			}
+		}
+		return ifScale, nil
+	}
 }
 
 //+kubebuilder:rbac:groups=autoscaling.myw.domain,resources=predictivehorizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
@@ -59,8 +248,6 @@ type PredictiveHorizontalPodAutoscalerReconciler struct {
 //+kubebuilder:rbac:groups=autoscaling.myw.domain,resources=predictivehorizontalpodautoscalers/finalizers,verbs=update
 //+kubebuilder:rabc:groups=apps,resources=deployments,verbs=get;list;update
 //+kubebuilder:rabc:groups=apps,resources=deployments/status,verbs=get
-//+kubebuilder:rabc:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;update
-//+kubebuilder:rabc:groups=autoscaling.k8s.io,resources=verticalpodautoscalers/status,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -74,179 +261,87 @@ type PredictiveHorizontalPodAutoscalerReconciler struct {
 func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 	// TODO(user): your logic here
-	//get the PredictiveHorizontalPodAutoscaler
+
+	// Get the PredictiveHorizontalPodAutoscaler.
 	log.V(1).Info("fetching PredictiveHorizontalPodAutoscaler")
 	var phpa autoscalingv1.PredictiveHorizontalPodAutoscaler
 	if err := r.Get(ctx, req.NamespacedName, &phpa); err != nil {
 		log.Error(err, "unable to fetch PredictiveHorizontalPodAutoscaler")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	log.V(1).Info("successfully fetched PredictiveHorizontalPodAutoscaler", "PredictiveHorizontalPodAutoscaler", phpa.Namespace+"/"+phpa.Name)
 
-	//fetch fields of PredictiveHorizontalPodAutoscaler
+	// Fetch fields of PredictiveHorizontalPodAutoscaler.
 	spec := phpa.Spec.DeepCopy()
 	status := phpa.Status.DeepCopy()
-	//alpha := spec.Alpha
 	maxReplicas := spec.MaxReplicas
 	minReplicas := spec.MinReplicas
-	//monitorWindowIntervalNum := spec.MonitorWindowIntervalNum
 	scaleDownStabilizationWindowSeconds := spec.ScaleDownStabilizationWindowSeconds
-	//scaleHistoryLimit := spec.ScaleHistoryLimit
 	scaleTargetRef := spec.ScaleTargetRef
 	targetMetricSource := spec.Metrics
-	//currentReplicas := status.CurrentReplicas
-	//desiredReplicas := status.DesiredReplicas
-	lastScaleTime := status.LastScaleTime
-	//metricsList := status.MetricsList
 
-	//monitorInterval is used to control the rate that the phpa status is updated and the replica count of workload spec is changed
-	monitorInterval := time.Duration(int64(float32(r.MonitorInterval.Nanoseconds()) * 0.9))
+	// Judge if a new round of monitoring is necessary.
+	// If not, end the reconcile.
 	lastMonitorTime := status.LastMonitorTime
 	if lastMonitorTime != nil {
-		if lastMonitorTime.Time.Add(monitorInterval).After(time.Now()) {
-			log.V(1).Info("too short interval to reconcile")
+		if lastMonitorTime.Time.Add(r.MonitorInterval).After(time.Now()) {
+			log.V(0).Info("too short interval to reconcile")
 			return ctrl.Result{}, nil
 		}
 	}
 
-	//initialize cpuInitializationPeriod, delayOfInitialReadinessStatus, tolerance and scaleHistoryLimit
-	if spec.CpuInitializationPeriod != nil {
+	// Initialize cpuInitializationPeriod, delayOfInitialReadinessStatus, tolerance and scaleHistoryLimit if specified in yaml.
+	if spec.CpuInitializationPeriod != "" {
 		var err error
-		r.cpuInitializationPeriod, err = time.ParseDuration(*spec.CpuInitializationPeriod)
+		r.CpuInitializationPeriod, err = time.ParseDuration(spec.CpuInitializationPeriod)
 		if err != nil {
 			log.Error(err, "unable to parse CpuInitializationPeriod in the format of time.Duration")
 			return ctrl.Result{}, err
 		}
-	} else {
-		r.cpuInitializationPeriod, _ = time.ParseDuration("5m")
 	}
-
-	if spec.DelayOfInitialReadinessStatus != nil {
+	if spec.DelayOfInitialReadinessStatus != "" {
 		var err error
-		r.delayOfInitialReadinessStatus, err = time.ParseDuration(*spec.DelayOfInitialReadinessStatus)
+		r.DelayOfInitialReadinessStatus, err = time.ParseDuration(spec.DelayOfInitialReadinessStatus)
 		if err != nil {
 			log.Error(err, "unable to parse DelayOfInitialReadinessStatus in the format of time.Duration")
 			return ctrl.Result{}, err
 		}
-	} else {
-		r.delayOfInitialReadinessStatus, _ = time.ParseDuration("30s")
 	}
-
 	if spec.Tolerance != nil {
-		tolerance64, err := strconv.ParseFloat(*spec.Tolerance, 32)
-		if err != nil {
-			log.Error(err, "unable to parse Tolerance in the format of float32")
-			return ctrl.Result{}, err
-		}
-		r.tolerance = float32(tolerance64)
-	} else {
-		r.tolerance = float32(0.1)
+		r.Tolerance = float32(*spec.Tolerance) / 100.0
 	}
-	r.scaleHistoryLimit = *spec.ScaleHistoryLimit
+	if spec.ScaleHistoryLimit != nil {
+		r.ScaleHistoryLimit = *spec.ScaleHistoryLimit
+	}
 
-	// get the resource for the target reference
-	log.V(1).Info("determining resource for scale target reference")
+	// Get the resource for the target reference.
+	// In test version, only Deployment is used as target workload.
 	var deployment appsv1.Deployment
 	namespace := req.Namespace
 	deploymentName := scaleTargetRef.Name
 	targetGVR := "apps/v1/deployment"
+	log.V(1).Info("fetching the target workload", "target GVR", targetGVR, "namespace", namespace, "deployment name", deploymentName)
 	if err := r.Get(ctx, client.ObjectKey{
 		Namespace: namespace,
 		Name:      deploymentName,
 	}, &deployment); err != nil {
-		log.Error(err, "unable to determine resource for scale target reference", "targetGVR", targetGVR, "namespace", namespace, "deploymentName", deploymentName)
+		log.Error(err, "unable to fetch the target workload", "target GVR", targetGVR, "namespace", namespace, "deployment name", deploymentName)
 		return ctrl.Result{}, err
 	}
-	containers := deployment.Spec.Template.Spec.Containers
+	log.V(1).Info("successfully fetched the target workload", "target GVR", targetGVR, "namespace", namespace, "deployment name", deploymentName)
 
-	// create vpa resources for the target reference if no vpa exists.
-	var vpa vpav1.VerticalPodAutoscaler
-	vpaName := "vpa-" + deploymentName
-	if err := r.Get(ctx, client.ObjectKey{
-		Namespace: namespace,
-		Name:      vpaName,
-	}, &vpa); client.IgnoreNotFound(err) != nil {
-		log.Error(err, "unable to get vpa", "vpa", vpaName)
-	}
-	if vpa.Name != vpaName {
-		//create new vpa and vpacheckpoint
-		targetRef := v1.CrossVersionObjectReference{
-			Kind:       scaleTargetRef.Kind,
-			APIVersion: scaleTargetRef.APIVersion,
-			Name:       scaleTargetRef.Name,
-		}
-		updateMode := vpav1.UpdateModeOff
-		vpa = vpav1.VerticalPodAutoscaler{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vpaName,
-				Namespace: namespace,
-				Labels:    make(map[string]string),
-			},
-			Spec: vpav1.VerticalPodAutoscalerSpec{
-				TargetRef: &targetRef,
-				UpdatePolicy: &vpav1.PodUpdatePolicy{
-					UpdateMode: &updateMode,
-				},
-			},
-		}
-		vpa.ObjectMeta.Labels["generator"] = "phpa" + phpa.Name
-		vpa.SetOwnerReferences([]metav1.OwnerReference{{
-			APIVersion: phpa.APIVersion,
-			Kind:       phpa.Kind,
-			Name:       phpa.Name,
-			UID:        phpa.UID,
-		}})
-		for _, container := range containers {
-			containerScalingMode := vpav1.ContainerScalingModeOff
-			vpa.Spec.ResourcePolicy = &vpav1.PodResourcePolicy{
-				ContainerPolicies: []vpav1.ContainerResourcePolicy{
-					{
-						ContainerName: container.Name,
-						Mode:          &containerScalingMode,
-						//MinAllowed: 	,
-					},
-				},
-			}
-		}
-		if err := r.Create(ctx, &vpa); err != nil {
-			log.Error(err, "unable to create vpa", "vpa", vpaName)
-			return ctrl.Result{}, err
-		}
-		for _, container := range containers {
-			vpacheckpointName := vpaName + "-" + container.Name
-			vpacheckpoint := vpav1.VerticalPodAutoscalerCheckpoint{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vpacheckpointName,
-					Namespace: namespace,
-					Labels:    make(map[string]string),
-				},
-				Spec: vpav1.VerticalPodAutoscalerCheckpointSpec{
-					VPAObjectName: vpaName,
-					ContainerName: container.Name,
-				},
-			}
-			vpacheckpoint.ObjectMeta.Labels["generator"] = "phpa" + phpa.Name
-			vpacheckpoint.SetOwnerReferences([]metav1.OwnerReference{{
-				APIVersion: phpa.APIVersion,
-				Kind:       phpa.Kind,
-				Name:       phpa.Name,
-				UID:        phpa.UID,
-			}})
-			if err := r.Create(ctx, &vpacheckpoint); err != nil {
-				log.Error(err, "unable to create vpacheckpoint", "vpacheckpoint", vpacheckpointName)
-				return ctrl.Result{}, err
-			}
-		}
-	}
-
-	//list the pods for the target resource
+	// List the pods for the target workload.
 	var podList corev1.PodList
-	selector := getMetricSelector(&deployment)
-	if err := r.List(ctx, &podList, client.InNamespace(req.Namespace), client.MatchingLabelsSelector{Selector: *selector}); err != nil {
-		log.Error(err, "unable to list the pods for target resource", "targetGVR", targetGVR, "namespace", namespace, "deploymentName", deploymentName)
+	selector := getDeploymentSelector(&deployment)
+	log.V(1).Info("listing pods for target workload", "selector", selector)
+	if err := r.List(ctx, &podList, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: *selector}); err != nil {
+		log.Error(err, "unable to list pods for target workload", "selector", selector)
 		return ctrl.Result{}, err
 	}
+	log.V(1).Info("successfully listed pods for target workload", "selector", selector)
 
-	//construct metricsClient and fetch raw pod metrics
+	// Construct metricsClient and fetch metrics.
+	// In test version, only raw pod metrics are fetched.
 	resourceClient := v1beta1.NewForConfigOrDie(r.Config)
 	metricsClient := metricsclient.NewRESTMetricsClient(
 		resourceClient,
@@ -254,107 +349,96 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 		nil,
 	)
 	resourceName := spec.Metrics.Name
-	log.V(1).Info("fetching the current raw resource metrics of scale target from metricsClient")
+	log.V(1).Info("fetching the current target metrics from metricsClient", "resource name", resourceName)
 	metrics, _, err := metricsClient.GetResourceMetric(ctx, resourceName, namespace, *selector, "")
 	if err != nil {
-		log.Error(err, "unable to fetch the current raw resource metrics of scale target from metricsClient")
+		log.Error(err, "unable to fetch the current target metrics from metricsClient", "resource name", resourceName)
 	}
-	//calculate desired replicas based on both the predicted next metric and the current metric
-	//calculate desired replicas based on the current metric
+	log.V(1).Info("successfully fetched the current target metrics from metricsClient", "resource name", resourceName)
+
+	// Compute pod resource request.
 	currentReplicas := deployment.Status.Replicas
-	var currentDesiredReplicas int32
-	var currentUsage int64
-	request, err := getPodResourceRequest(&deployment, resourceName)
+	podRequest, err := computePodResourceRequest(&podList.Items[0], resourceName)
 	if err != nil {
-		log.Error(err, "unable to get pod resource request")
+		log.Error(err, "unable to compute pod resource request")
 		return ctrl.Result{}, err
 	}
-	currentDesiredReplicas, currentUsage = r.calcDesiredReplicas(podList.Items, metrics, currentReplicas, request, phpa.Spec.Metrics)
 
-	//construct the new metric status list and predict the next metric
-	totalRequest := request * int64(len(metrics))
-	fmt.Printf("currentDesiredReplicas: %v, currentUsage: %v\n", currentDesiredReplicas, currentUsage)
-	metricStatus := getCurrentMetricStatus(metrics, request, resourceName)
-	constructPHPAMetricsList(&phpa, metricStatus)
-	//nextMetricStatus, err := predictNextMetricStatusByDES(&phpa, request, totalRequest)
+	// Construct the new metric status list and predict the next metric.
+	currentMetricStatus, metricsLength := r.getCurrentMetricStatus(podList.Items, metrics, podRequest, resourceName)
+	totalRequest := podRequest * int64(metricsLength)
+	constructPHPAMetricsList(&phpa, currentMetricStatus)
+	log.V(1).Info("predict the metric at the next interval")
 	nextMetricStatus, err := predictNextMetricStatusByADES(&phpa, totalRequest)
 	if err != nil {
-		log.Error(err, "failed to predict next metric status")
+		log.Error(err, "failed to predict the metric at the next interval")
 		return ctrl.Result{}, err
 	}
 
-	//calculate desired replicas based on the predicted metric
-	predictedDesiredReplicas := r.predictDesiredReplicas(nextMetricStatus, currentReplicas, int32(len(metrics)), targetMetricSource)
-	fmt.Printf("predictedDesiredReplicas: %v, predictedUsage: %v\n", predictedDesiredReplicas, nextMetricStatus.CurrentValue)
-
-	//decide the final desired replicas based on both the current and predicted metrics
-	var finalDesiredReplicas int32
-	if currentDesiredReplicas == currentReplicas {
-		finalDesiredReplicas = currentReplicas
-	} else if currentDesiredReplicas > currentReplicas {
-		if predictedDesiredReplicas > currentDesiredReplicas {
-			finalDesiredReplicas = predictedDesiredReplicas
-		} else {
-			finalDesiredReplicas = currentDesiredReplicas
+	// Create the scale decision maker and scale executor according to the mode.
+	var scaleDecisionMaker ScaleDecisionMaker
+	var scaleExecutor ScaleExecutor
+	if spec.Mode == autoscalingv1.ScaleModeHorizontal {
+		scaleDecisionMaker = HorizontalScaleDecisionMaker{
+			pods:                          podList.Items,
+			metrics:                       metrics,
+			currentReplicas:               currentReplicas,
+			podRequestMilliValue:          podRequest,
+			nextMetricStatus:              nextMetricStatus,
+			targetMetricSource:            targetMetricSource,
+			cpuInitializationPeriod:       &r.CpuInitializationPeriod,
+			delayOfInitialReadinessStatus: &r.DelayOfInitialReadinessStatus,
+			tolerance:                     r.Tolerance,
 		}
-	} else {
-		finalDesiredReplicas = currentDesiredReplicas
+		scaleDownStabilizationWindowDuration := time.Duration(scaleDownStabilizationWindowSeconds) * time.Second
+		scaleExecutor = HorizontalScaleExecutor{
+			ctx:                                  ctx,
+			Client:                               r.Client,
+			deployment:                           &deployment,
+			currentReplicas:                      currentReplicas,
+			minReplicas:                          minReplicas,
+			maxReplicas:                          maxReplicas,
+			scaleDownStabilizationWindowDuration: &scaleDownStabilizationWindowDuration,
+			lastScaleTime:                        phpa.Status.LastScaleTime,
+		}
 	}
 
-	//refactor the final desired replicas based on the minReplicas and maxReplicas
-	if finalDesiredReplicas < *minReplicas {
-		finalDesiredReplicas = *minReplicas
-	} else if finalDesiredReplicas > *maxReplicas {
-		finalDesiredReplicas = *maxReplicas
-	}
-	phpa.Status.CurrentReplicas = &currentReplicas
-	phpa.Status.DesiredReplicas = &finalDesiredReplicas
+	// Decide the final desired replicas based on both the current and predicted metrics.
+	desiredReplicas := scaleDecisionMaker.computeDesiredReplicas()
+	desiredResourceRequirements, desiredPodRequestQuantity := scaleDecisionMaker.computeDesiredResourceRequirements()
+	// desiredResourceRequirements, desiredPodRequestQuantity := scaleDecisionMaker.computeDesiredResourceRequirements()
 
-	//do the scaling and record the scale event
-	if finalDesiredReplicas == currentReplicas {
-		log.V(0).Info("not to scale because of the same desired replicas with actual replicas")
-	} else if finalDesiredReplicas > currentReplicas {
-		log.V(0).Info("scale up", "current replicas", currentReplicas, "desired replicas", finalDesiredReplicas)
-		deployment.Spec.Replicas = &finalDesiredReplicas
-		if err := r.Update(ctx, &deployment); err != nil {
-			log.Error(err, "failed to scale pod replicas")
-			return ctrl.Result{}, err
-		}
+	// Refactor the final desired replicas based on the minReplicas and maxReplicas.
+	if desiredReplicas < minReplicas {
+		desiredReplicas = minReplicas
+	} else if desiredReplicas > maxReplicas {
+		desiredReplicas = maxReplicas
+	}
+	phpa.Status.CurrentReplicas = currentReplicas
+	phpa.Status.DesiredReplicas = desiredReplicas
+
+	// Do the scaling and record the scale event.
+	ifScaled, err := scaleExecutor.scaleWithDesiredStrategy(desiredReplicas, desiredResourceRequirements)
+	if err != nil {
+		log.Error(err, "failed to scale")
+		return ctrl.Result{}, err
+	}
+	if ifScaled {
 		nowTime := metav1.Time{Time: time.Now()}
 		phpa.Status.LastScaleTime = &nowTime
 		newScaleEvent := autoscalingv1.ScaleEvent{
 			Time:     &nowTime,
-			Replicas: &finalDesiredReplicas,
+			Type:     "Horizontal",
+			Replicas: desiredReplicas,
+			Request:  &desiredPodRequestQuantity,
 		}
 		r.recordScaleEvent(&phpa, newScaleEvent)
+		log.V(0).Info("successfully scaled", "scale event", newScaleEvent)
 	} else {
-		scaleDownStabilizationWindowDuration := time.Duration(*scaleDownStabilizationWindowSeconds) * time.Second
-		var ifScale bool
-		if lastScaleTime != nil {
-			ifScale = time.Now().After(lastScaleTime.Time.Add(scaleDownStabilizationWindowDuration))
-		} else {
-			ifScale = true
-		}
-		if ifScale {
-			log.V(0).Info("scale down", "current replicas", currentReplicas, "desired replicas", finalDesiredReplicas)
-			deployment.Spec.Replicas = &finalDesiredReplicas
-			if err := r.Update(ctx, &deployment); err != nil {
-				log.Error(err, "failed to scale pod replicas")
-				return ctrl.Result{}, err
-			}
-			nowTime := metav1.Time{Time: time.Now()}
-			phpa.Status.LastScaleTime = &nowTime
-			newScaleEvent := autoscalingv1.ScaleEvent{
-				Time:     &nowTime,
-				Replicas: &finalDesiredReplicas,
-			}
-			r.recordScaleEvent(&phpa, newScaleEvent)
-		} else {
-			log.V(0).Info("not to scale down because last scaling is too close, within scaleDownStabilizationWindow")
-		}
+		log.V(0).Info("not to scale because of the same desired replicas with current replicas or too often scaling down")
 	}
 
-	//update the phpa status
+	// Update the phpa status.
 	if lastMonitorTime != nil {
 		log.V(0).Info("updating the phpa status", "time now", time.Now(), "time interval from last monitor", time.Since(lastMonitorTime.Time))
 	}
@@ -366,136 +450,6 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 	return ctrl.Result{}, nil
 }
 
-// calcDesiredReplicas calculates the desired replicas with the current metric for the target VALUE or UTILIZATION
-func (r *PredictiveHorizontalPodAutoscalerReconciler) calcDesiredReplicas(podList []corev1.Pod, metrics metricsclient.PodMetricsInfo, currentReplicas int32, request int64, targetMetricSource *autoscalingv1.MetricSource) (desiredReplicas int32, usage int64) {
-	resourceName := targetMetricSource.Name
-	targetAverageValue := targetMetricSource.TargetAverageValue
-	targetAverageUtilization := targetMetricSource.TargetAverageUtilization
-	readyPodCount, unreadyPods, missingPods, ignoredPods := groupPods(podList, metrics, resourceName, r.cpuInitializationPeriod, r.delayOfInitialReadinessStatus)
-	removeMetricsForPods(metrics, unreadyPods)
-	removeMetricsForPods(metrics, ignoredPods)
-
-	if targetAverageUtilization == nil {
-		//calculate the desired replicas for target VALUE
-		usageRatio, usage := calcValueUsageRatio(metrics, targetAverageValue.MilliValue())
-		scaledUpWithUnready := len(unreadyPods) > 0 && usageRatio > 1.0
-		if !scaledUpWithUnready && len(missingPods) == 0 {
-			if math.Abs(float64(usageRatio-1.0)) <= float64(r.tolerance) {
-				// return the current replicas if the change would be too small
-				return currentReplicas, usage
-			}
-			// if there's no unready or missing pods, we can calculate the new replica count now
-			return int32(math.Ceil(float64(usageRatio) * float64(readyPodCount))), usage
-		}
-
-		// For the missing pods, we assume their usage based on the scale direction.
-		// When it's to scale up, the usage value is assumed to be 0.
-		// When it's to scale down, the usage value is assumed to be the same as target average value.
-		// This helps dampen the magnitude of any potential scale
-		if len(missingPods) > 0 {
-			if usageRatio > 1.0 {
-				for podName := range missingPods {
-					metrics[podName] = metricsclient.PodMetric{Value: 0}
-				}
-			} else {
-				for podName := range missingPods {
-					metrics[podName] = metricsclient.PodMetric{Value: targetAverageValue.MilliValue()}
-				}
-			}
-		}
-
-		//For unready pods, we assume they consume 0 resource in case of a scale up.
-		if scaledUpWithUnready {
-			for podName := range metrics {
-				metrics[podName] = metricsclient.PodMetric{Value: 0}
-			}
-		}
-
-		//re-run the usage calculation
-		newUsageRatio, _ := calcValueUsageRatio(metrics, targetAverageValue.MilliValue())
-
-		if math.Abs(float64(newUsageRatio-1.0)) <= float64(r.tolerance) || (usageRatio > 1.0 && newUsageRatio < 1.0) || (usageRatio < 1.0 && newUsageRatio > 1.0) {
-			// return the current replicas if the change would be too small,
-			// or if the new usage ratio would cause a change in scale direction
-			return currentReplicas, usage
-		}
-
-		newReplicas := int32(math.Ceil(float64(newUsageRatio) * float64(len(metrics))))
-		if (newUsageRatio < 1.0 && newReplicas > currentReplicas) || (newUsageRatio > 1.0 && newReplicas < currentReplicas) {
-			// return the current replicas if the change of metrics length would cause a change in scale direction
-			return currentReplicas, usage
-		}
-		return newReplicas, usage
-	} else {
-		//calculate the desired replicas for target UTILIZATION
-		usageRatio, _, usage := calcUtilizationUsageRatio(metrics, request, *targetAverageUtilization)
-
-		scaledUpWithUnready := len(unreadyPods) > 0 && usageRatio > 1.0
-		if !scaledUpWithUnready && len(missingPods) == 0 {
-			if math.Abs(float64(usageRatio)-1.0) <= float64(r.tolerance) {
-				return currentReplicas, usage
-			}
-			return int32(math.Ceil(float64(usageRatio) * float64(readyPodCount))), usage
-		}
-
-		if len(missingPods) > 0 {
-			if usageRatio < 1.0 {
-				missingPodUtilization := int64(math.Max(100, float64(*targetAverageUtilization)))
-				for podName := range missingPods {
-					metrics[podName] = metricsclient.PodMetric{Value: missingPodUtilization / 100 * request}
-				}
-			} else if usageRatio > 1.0 {
-				for podName := range missingPods {
-					metrics[podName] = metricsclient.PodMetric{Value: 0}
-				}
-			}
-		}
-
-		if scaledUpWithUnready {
-			for podName := range unreadyPods {
-				metrics[podName] = metricsclient.PodMetric{Value: 0}
-			}
-		}
-
-		newUsageRatio, _, _ := calcUtilizationUsageRatio(metrics, request, *targetAverageUtilization)
-
-		if math.Abs(float64(newUsageRatio)-1.0) <= float64(r.tolerance) || (newUsageRatio > 1.0 && usageRatio < 1.0) || (newUsageRatio < 1.0 && usageRatio > 1.0) {
-			return currentReplicas, usage
-		}
-
-		newReplicas := int32(math.Ceil(float64(newUsageRatio) * float64(len(metrics))))
-		if newUsageRatio < 1.0 && newReplicas > currentReplicas || (newUsageRatio > 1.0 && newReplicas < currentReplicas) {
-			return currentReplicas, usage
-		}
-		return newReplicas, usage
-	}
-}
-
-// predictDesiredReplicas calculates the desired replicas with the predicted metric for the target VALUE or UTILIZATION
-func (r *PredictiveHorizontalPodAutoscalerReconciler) predictDesiredReplicas(nextMetricStatus *autoscalingv1.MetricStatus, currentReplicas int32, metricLength int32, targetMetricSource *autoscalingv1.MetricSource) (desiredReplicas int32) {
-	targetAverageValue := targetMetricSource.TargetAverageValue
-	targetAverageUtilization := targetMetricSource.TargetAverageUtilization
-	nextValue := nextMetricStatus.CurrentValue
-	nextUtilization := nextMetricStatus.CurrentUtilization
-	if targetAverageUtilization == nil {
-		//predict the desired replicas for the target VALUE
-		nextUsageRatio := float64(nextValue.MilliValue()) / float64(targetAverageValue.MilliValue()) / float64(metricLength)
-		desiredReplicas = int32(math.Ceil(nextUsageRatio * float64(metricLength)))
-		if math.Abs(nextUsageRatio-1.0) <= float64(r.tolerance) {
-			return currentReplicas
-		}
-		return desiredReplicas
-	} else {
-		//predict the desired replicas for the target UTILIZATION
-		nextUsageRatio := float64(*nextUtilization) / float64(*targetAverageUtilization)
-		desiredReplicas = int32(math.Ceil(nextUsageRatio * float64(metricLength)))
-		if math.Abs(nextUsageRatio-1.0) <= float64(r.tolerance) {
-			return currentReplicas
-		}
-		return desiredReplicas
-	}
-}
-
 // recordScaleEvent records a scale event.
 func (r *PredictiveHorizontalPodAutoscalerReconciler) recordScaleEvent(phpa *autoscalingv1.PredictiveHorizontalPodAutoscaler, scaleEvent autoscalingv1.ScaleEvent) {
 	scaleEventsList := phpa.Status.ScaleEventsList
@@ -503,10 +457,10 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) recordScaleEvent(phpa *aut
 		phpa.Status.ScaleEventsList = make([]autoscalingv1.ScaleEvent, 0)
 	}
 	scaleEventNum := int32(len(scaleEventsList))
-	if scaleEventNum < r.scaleHistoryLimit {
+	if scaleEventNum < r.ScaleHistoryLimit {
 		phpa.Status.ScaleEventsList = append(scaleEventsList, scaleEvent)
 	} else {
-		scaleEventsList = scaleEventsList[1:r.scaleHistoryLimit:r.scaleHistoryLimit]
+		scaleEventsList = scaleEventsList[1:r.ScaleHistoryLimit:r.ScaleHistoryLimit]
 		phpa.Status.ScaleEventsList = append(scaleEventsList, scaleEvent)
 	}
 }
@@ -568,63 +522,10 @@ func predictNextMetricStatusByADES(phpa *autoscalingv1.PredictiveHorizontalPodAu
 	nextMetricStatus := autoscalingv1.MetricStatus{
 		Name:               metricName,
 		CurrentValue:       nextQuantity,
-		CurrentUtilization: &nextTotalUtilization,
+		CurrentUtilization: nextTotalUtilization,
 	}
 	for i, v := range f {
 		fmt.Printf("%vth prediction: %v\n", i, v)
-	}
-	return &nextMetricStatus, nil
-}
-
-// predictNextMetricStatusByDES uses DES to predict the value and utilization at the next time interval,
-// and returns *autoscalingv1.MetricStatus composed of the information.
-func predictNextMetricStatusByDES(phpa *autoscalingv1.PredictiveHorizontalPodAutoscaler, singleRequest int64, totalRequest int64) (*autoscalingv1.MetricStatus, error) {
-	metricList := phpa.Status.MetricsList
-	metricNum := len(phpa.Status.MetricsList)
-	metricName := metricList[0].Name
-	var alpha float32
-	if len(metricList) == 0 {
-		return nil, fmt.Errorf("there's no metric provided for prediction")
-	}
-	if phpa.Spec.Alpha != nil {
-		alpha64, err := strconv.ParseFloat(*phpa.Spec.Alpha, 32)
-		if err != nil {
-			return nil, fmt.Errorf("incorrect format of alpha (%v) provided : %v", phpa.Spec.Alpha, err)
-		}
-		alpha = float32(alpha64)
-	} else {
-		alpha = calcAlphaForMetrics(metricList, singleRequest)
-	}
-	st1 := make([]float32, metricNum)
-	st2 := make([]float32, metricNum)
-	at := make([]float32, metricNum)
-	bt := make([]float32, metricNum)
-	st1[0] = float32(metricList[0].CurrentValue.MilliValue())
-	st2[0] = st1[0]
-	for i := 1; i < metricNum; i++ {
-		st1[i] = alpha*float32(metricList[i].CurrentValue.MilliValue()) + (float32(1)-alpha)*st1[i-1]
-		st2[i] = alpha*st1[i] + (float32(1)-alpha)*st2[i-1]
-	}
-	for i := 0; i < metricNum; i++ {
-		at[i] = 2*st1[i] - st2[i]
-		bt[i] = alpha / (1 - alpha) * (st1[i] - st2[i])
-	}
-	nextTotalValue := int64(math.Floor(float64(at[metricNum-1]+bt[metricNum-1]) + 0.5))
-	if nextTotalValue < 0 {
-		nextTotalValue = 0
-	}
-	nextTotalUtilization := int32(math.Floor(100*float64(nextTotalValue)/float64(totalRequest) + 0.5))
-	var nextQuantity *resource.Quantity
-	if metricName == corev1.ResourceCPU {
-		nextQuantity = resource.NewMilliQuantity(nextTotalValue, resource.DecimalSI)
-	}
-	if metricName == corev1.ResourceMemory {
-		nextQuantity = resource.NewMilliQuantity(nextTotalValue, resource.BinarySI)
-	}
-	nextMetricStatus := autoscalingv1.MetricStatus{
-		Name:               metricName,
-		CurrentValue:       nextQuantity,
-		CurrentUtilization: &nextTotalUtilization,
 	}
 	return &nextMetricStatus, nil
 }
@@ -633,17 +534,6 @@ func removeMetricsForPods(metrics metricsclient.PodMetricsInfo, pods sets.String
 	for pod := range pods {
 		delete(metrics, pod)
 	}
-}
-
-// calcValueUsageRatio calculates the usage ratio of the target value
-func calcValueUsageRatio(metrics metricsclient.PodMetricsInfo, targetUsage int64) (usageRatio float32, usage int64) {
-	usage = int64(0)
-	for _, metric := range metrics {
-		usage += metric.Value
-	}
-	targetUsage = targetUsage * int64(len(metrics))
-	usageRatio = float32(usage) / float32(targetUsage)
-	return usageRatio, usage
 }
 
 // calcUtilizationUsageRatio calculates the usage ratio of the target utilization
@@ -708,28 +598,26 @@ func groupPods(podList []corev1.Pod, metrics metricsclient.PodMetricsInfo, resou
 	return
 }
 
-// getPodResourceRequest gets the resource request quantity specified by resourceName for each pod of the deployment
-func getPodResourceRequest(deployment *appsv1.Deployment, resourceName corev1.ResourceName) (int64, error) {
-	totalRequest := int64(0)
+// computePodResourceRequest gets the resource request quantity specified by resourceName for each pod
+func computePodResourceRequest(podSample *corev1.Pod, resourceName corev1.ResourceName) (int64, error) {
+	podRequest := int64(0)
 	if resourceName == corev1.ResourceCPU {
-		for _, c := range deployment.Spec.Template.Spec.Containers {
+		for _, c := range podSample.Spec.Containers {
 			if c.Resources.Requests == nil {
 				return 0, fmt.Errorf("no resource request for cpu of the container: %v", c.Name)
 			}
-			request := c.Resources.Requests.Cpu().MilliValue()
-			totalRequest += int64(request)
+			podRequest += c.Resources.Requests.Cpu().MilliValue()
 		}
 	}
 	if resourceName == corev1.ResourceMemory {
-		for _, c := range deployment.Spec.Template.Spec.Containers {
+		for _, c := range podSample.Spec.Containers {
 			if c.Resources.Requests == nil {
 				return 0, fmt.Errorf("no resource request for memory of the container: %v", c.Name)
 			}
-			request := c.Resources.Requests.Memory().MilliValue()
-			totalRequest += int64(request)
+			podRequest += c.Resources.Requests.Memory().MilliValue()
 		}
 	}
-	return totalRequest, nil
+	return podRequest, nil
 }
 
 // calcCurrentResourceValue uses the metrics map to calculate the sum of the current value of the given pods
@@ -757,18 +645,28 @@ func calcCurrentResourceUtilization(resourceValue *resource.Quantity, request in
 
 // getMetricsStatus transforms the metrics fetched from metricsclient into the format of autoscalingv1.MetricStatus,
 // which container the name, value and utilization of pods resource.
-func getCurrentMetricStatus(metrics metricsclient.PodMetricsInfo, request int64, resourceName corev1.ResourceName) *autoscalingv1.MetricStatus {
+// This first removes metrics from unready and ignored pods.
+func (r *PredictiveHorizontalPodAutoscalerReconciler) getCurrentMetricStatus(pods []corev1.Pod, metrics metricsclient.PodMetricsInfo, request int64, resourceName corev1.ResourceName) (currentMetricStatus *autoscalingv1.MetricStatus, metricLength int32) {
+	// Copy PodMetricsInfo from metrics and remove unready and ignored pods.
+	removedMetrics := make(metricsclient.PodMetricsInfo, len(metrics))
+	for i, k := range metrics {
+		removedMetrics[i] = k
+	}
+	_, unreadyPods, _, ignoredPods := groupPods(pods, metrics, resourceName, r.CpuInitializationPeriod, r.DelayOfInitialReadinessStatus)
+	removeMetricsForPods(metrics, unreadyPods)
+	removeMetricsForPods(metrics, ignoredPods)
+
 	currentValue := calcCurrentResourceValue(metrics, resourceName)
 	currentUtilization := calcCurrentResourceUtilization(currentValue, request*int64(len(metrics)), resourceName)
 	return &autoscalingv1.MetricStatus{
 		Name:               resourceName,
 		CurrentValue:       currentValue,
-		CurrentUtilization: &currentUtilization,
-	}
+		CurrentUtilization: currentUtilization,
+	}, int32(len(removedMetrics))
 }
 
-// getMetricSelector convert the selector of appsv1.Deployment into labels.Selector
-func getMetricSelector(deployment *appsv1.Deployment) *labels.Selector {
+// getDeploymentSelector convert the selector of appsv1.Deployment into labels.Selector
+func getDeploymentSelector(deployment *appsv1.Deployment) *labels.Selector {
 	matchLabels := deployment.Spec.Selector.MatchLabels
 	matchExpressions := deployment.Spec.Selector.MatchExpressions
 	selector := labels.NewSelector()
@@ -810,40 +708,17 @@ func constructPHPAMetricsList(phpa *autoscalingv1.PredictiveHorizontalPodAutosca
 		phpa.Status.MetricsList = make([]autoscalingv1.MetricStatus, 0)
 	}
 	metricsListLength := int32(len(metricsList))
-	if metricsListLength < *monitorWindow {
+	if metricsListLength < monitorWindow {
 		phpa.Status.MetricsList = append(phpa.Status.MetricsList, *metricStatus)
 	} else {
-		metricsList := metricsList[1:*monitorWindow:*monitorWindow]
+		metricsList := metricsList[1:monitorWindow:monitorWindow]
 		phpa.Status.MetricsList = append(metricsList, *metricStatus)
 	}
-}
-
-// calcAlphaForMetrics calculates the alpha applied to resource prediction based on the avsd
-func calcAlphaForMetrics(metrics []autoscalingv1.MetricStatus, request int64) float32 {
-	alpha := float32(0.3)
-	return alpha
-}
-
-// calcStandardDeviation calculates the standard deviation of the given slice
-func calcStandardDeviation(metrics []float64) float64 {
-	var variance float64
-	var sum float64
-	for _, metric := range metrics {
-		sum += metric
-	}
-	mean := sum / float64(len(metrics))
-	for _, metric := range metrics {
-		variance += math.Pow(metric-mean, 2)
-	}
-	variance /= float64(len(metrics)) - 1
-	return math.Sqrt(variance)
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *PredictiveHorizontalPodAutoscalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&autoscalingv1.PredictiveHorizontalPodAutoscaler{}).
-		Owns(&vpav1.VerticalPodAutoscaler{}).
-		Owns(&vpav1.VerticalPodAutoscalerCheckpoint{}).
 		Complete(r)
 }

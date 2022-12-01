@@ -7,7 +7,12 @@ spec:
     kind: Deployment
     name: nginx
     apiVersion: apps/v1
-  maxReplicas: 20
   metrics:
     name: cpu
-    targetAverageUtilization: 70
+    lowerTargetUtilization: 60
+    upperTargetUtilization: 80
+  maxReplicas: 20
+  mode: Horizontal
+  verticalScalePolicy:
+    type: Normal
+    evictionTolerance: 50

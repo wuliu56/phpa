@@ -33,10 +33,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	autoscalingv1 "myw.domain/autoscaling/api/v1"
 	"myw.domain/autoscaling/controllers"
 	//+kubebuilder:scaffold:imports
+)
+
+const (
+	DefaultSyncPeriod                            = time.Second * 10
+	SyncRatio                            float32 = 0.9
+	DefaultCPUInitializationPeriod               = time.Minute * 5
+	DefaultDelayOfInitialReadinessStatus         = time.Second * 30
+	DefaultTolerance                     float32 = 0.1
+	DefaultScaleHistoryLimit             int32   = 20
 )
 
 var (
@@ -49,7 +57,6 @@ func init() {
 
 	utilruntime.Must(autoscalingv1.AddToScheme(scheme))
 
-	utilruntime.Must(vpav1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 
 	//DefaultRESTMapper used to get mappings from GVK to GVR
@@ -72,8 +79,7 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	syncSecond := time.Duration(10)
-	syncPeriod := syncSecond * time.Second
+	syncPeriod := DefaultSyncPeriod
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		MetricsBindAddress:     metricsAddr,
@@ -99,11 +105,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	monitorInterval := time.Duration(int64(float64(syncPeriod.Nanoseconds()) * float64(SyncRatio)))
 	if err = (&controllers.PredictiveHorizontalPodAutoscalerReconciler{
-		Config:          ctrl.GetConfigOrDie(),
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		MonitorInterval: syncPeriod,
+		Config:                        ctrl.GetConfigOrDie(),
+		Client:                        mgr.GetClient(),
+		Scheme:                        mgr.GetScheme(),
+		MonitorInterval:               monitorInterval,
+		CpuInitializationPeriod:       DefaultCPUInitializationPeriod,
+		DelayOfInitialReadinessStatus: DefaultDelayOfInitialReadinessStatus,
+		Tolerance:                     DefaultTolerance,
+		ScaleHistoryLimit:             DefaultScaleHistoryLimit,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PredictiveHorizontalPodAutoscaler")
 		os.Exit(1)

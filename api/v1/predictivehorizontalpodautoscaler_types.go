@@ -27,54 +27,156 @@ import (
 
 // CrossVersionObjectReference contains the information to get the referred resource
 type CrossVersionObjectReference struct {
-	//Kind of the referent
+	// Kind of the referent
 	Kind string `json:"kind"`
 
-	//Name of the referent
+	// Name of the referent
 	Name string `json:"name"`
 
-	//API version of the referent
-	//+optional
+	// API version of the referent
+	// +optional
 	APIVersion string `json:"apiVersion,omitempty"`
 }
 
 type MetricSource struct {
-	//Name is the name of the resource in question.
+	// The name of the resource in question.
 	Name v1.ResourceName `json:"name"`
 
-	//TargetAverageUtilization is the target value of the average of the resource metric across all relevant
-	//pods, represented as a percentage of the requested value of the resource for the pods.
-	//+optional
-	TargetAverageUtilization *int32 `json:"targetAverageUtilization,omitempty"`
+	// The lower target utilization of the average of the resource metric across all relevant
+	// pods, represented as a percentage of the requested value of the resource for the pods.
+	// Defaults to 0 and minimum is 0.
+	// +kubebuilder:default=0
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	LowerTargetUtilization int32 `json:"lowerTargetUtilization"`
 
-	//TargetAverageValue is the target value of the resource metric across all relevant pods, as a raw value.
-	//+optional
-	TargetAverageValue *resource.Quantity `json:"targetAverageValue,omitempty"`
+	// The upper target utilization of the average of the resource metric across all relevant
+	// pods, represented as a percentage of the requested value of the resource for the pods.
+	// Defaults to 80 and minimum is 0.
+	// +kubebuilder:default=80
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	UpperTargetUtilization int32 `json:"upperTargetUtilization"`
 }
 
 type MetricStatus struct {
-	//Name is the name of the resource in question.
+	// The name of the resource in question.
 	Name v1.ResourceName `json:"name"`
 
-	//CurrentUtilization is the current value of the resource metric across all relevant
-	//pods, represented as a percentage of the requested value of the resource for the pods.
-	//It will only be present if `targetAverageUtilization` was set in the corresponding metric specification.
-	//+optional
-	CurrentUtilization *int32 `json:"currentUtilization,omitempty"`
+	// The current value of the resource metric across all relevant pods,
+	// represented as a percentage of the requested value of the resource for the pods.
+	CurrentUtilization int32 `json:"currentUtilization"`
 
-	//CurrentAverageUtilization is the current value of the resource metric across all relevant
-	//pods, represented as the raw value of the requested value of the resource for the pods.
-	//It will always be present.
+	// The current value of the resource metric across all relevant pods,
+	// represented as the raw value sum of the requested value of the resource for the pods.
 	CurrentValue *resource.Quantity `json:"currentValue,omitempty"`
 }
 
-// ScaleEvent records the information of a scaling event, including its happening time and desired replicas.
+// ScaleEvent records the information of a scaling event.
 type ScaleEvent struct {
-	//HappeningTime is the time when a scaling happens.
+	//The time when a scaling happens.
 	Time *metav1.Time `json:"time"`
 
-	//Replicas is the replica count of a scaling.
-	Replicas *int32 `json:"replicas"`
+	//Type of scaling.
+	//Possible values are:
+	//- "Horizontal"
+	//- "Vertical"
+	Type string `json:"type"`
+
+	//Count of desired replicas.
+	Replicas int32 `json:"replicas"`
+
+	//The desired pod request.
+	Request *resource.Quantity `json:"request"`
+}
+
+// Specifies the mode of scaling.
+// Can only be one of the following modes.
+// +kubebuilder:validation:Enum=Horizontal;Vertical;Hybrid
+// +kubebuilder:default=Hybrid
+type ScaleMode string
+
+const (
+	// Only horizontally scale in this mode.
+	ScaleModeHorizontal ScaleMode = "Horizontal"
+
+	// Only vertically scale in this mode.
+	ScaleModeVertical ScaleMode = "Vertical"
+
+	// Both horizontally and vertically scale in this mode.
+	ScaleModeHybrid ScaleMode = "Hybrid"
+)
+
+// Specifies the policy of horizontal scaling.
+type HorizontalScalePolicy struct {
+	// Alpha for the DES algorithm. If not explicitly specified,
+	// the auto adjustment will be applied to alpha according to collected metrics.
+	// +optional
+	Alpha string `json:"alpha,omitempty"`
+}
+
+// The policy type of vertical scaling.
+// Can only be one of the following policies.
+// Default is Normal.
+// +kubebuilder:validation:Enum=Normal;Available;Safe
+// +kubebuilder:default=Normal
+type VerticalScalePolicyType string
+
+const (
+	// Replace the old pods by new ones using rolling update.
+	VerticalScalePolicyTypeNormal VerticalScalePolicyType = "Normal"
+
+	// Create more replicas before scaling in order to ensure availability of the target workload.
+	VerticalScalePolicyTypeAvailable VerticalScalePolicyType = "Available"
+
+	// Replace the old workload by new one using rolling update.
+	// A service pointing to the target workload is necessary to use this type.
+	VerticalScalePolicyTypeSafe VerticalScalePolicyType = "Safe"
+)
+
+// Specifies container resource policy.
+type ContainerResourcePolicy struct {
+	// Name of the container or DefaultContainerResourcePolicy, in which
+	// case the policy is used by the containers that don't have their own
+	// policy specified.
+	ContainerName string `json:"containerName,omitempty"`
+
+	// Specifies the minimal amount of resources that the container can be
+	// scaled down to. The default is no minimum.
+	// +optional
+	MinAllowed v1.ResourceList `json:"minAllowed,omitempty"`
+
+	// Specifies the maximal amount of resources that the container can be
+	// scaled up to. The default is no maximum.
+	// +optional
+	MaxAllowed v1.ResourceList `json:"maxAllowed,omitempty"`
+}
+
+// Specifies the policy of vertical scaling.
+type VerticalScalePolicy struct {
+	// The policy type of vertical scaling.
+	// Possible values are:
+	// - "Normal"
+	// - "Available"
+	// - "Safe"
+	// Defaults to 'Normal'
+	Type VerticalScalePolicyType `json:"type"`
+
+	// Fraction of replica count that can be evicted for update, if more than one pod can be evicted.
+	// Represented as a percentage.
+	// Defaults to 50 and minimum is 1.
+	// +kubebuilder:default=50
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	EvictionTolerance int32 `json:"evictionTolerance"`
+
+	// Per-container resource policies.
+	// +optional
+	ContainerResourcePolicies []ContainerResourcePolicy `json:"containerResourcePolicies,omitempty"`
+
+	// Label selector of the service that points to the target pods.
+	// +optional
+	ServiceLabelSelector map[string]string `json:"serviceLabelSelector,omitempty"`
 }
 
 // PredictiveHorizontalPodAutoscalerSpec defines the desired state of PredictiveHorizontalPodAutoscaler
@@ -82,67 +184,80 @@ type PredictiveHorizontalPodAutoscalerSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	//ScaleTargetRef refers to the workload resource to be scaled.
-	ScaleTargetRef CrossVersionObjectReference `json:"scaleTargetRef"`
+	// Refers to the workload resource to be scaled.
+	ScaleTargetRef *CrossVersionObjectReference `json:"scaleTargetRef"`
 
-	//MinReplicas is the lower limit for the number of replicas to which the autoscaler can scale down.
-	//It defaults to 1 pod.
-	//+kubebuilder:default=1
-	//+optional
-	MinReplicas *int32 `json:"minReplicas,omitempty"`
+	// The target metric used to calculate the desired replica count.
+	// Here multi-metrics haven't been applied, and only resource metrics are supported.
+	Metrics *MetricSource `json:"metrics"`
 
-	//MaxReplicas is the upper limit for the number of replicas to which the autoscaler can scale up.
-	//+kubebuilder:validation:Minimum=1
-	MaxReplicas *int32 `json:"maxReplicas"`
+	// The lower limit for the number of replicas to which the autoscaler can scale down.
+	// Defaults to 1 and minimum is 1.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MinReplicas int32 `json:"minReplicas"`
 
-	//Metrics contains the specifications for which to use to to calculate the desired replica count.
-	//Here multi-metrics haven't been applied, and only resource metrics are supported.
-	//+optional
-	Metrics *MetricSource `json:"metrics,omitempty"`
+	// The upper limit for the number of replicas to which the autoscaler can scale up.
+	// +kubebuilder:validation:Minimum=1
+	MaxReplicas int32 `json:"maxReplicas"`
 
-	//ScaleDownStabilizationWindowSeconds refers to the minimum interval(second) between pod scaling down.
-	//+kubebuilder:validation:Minimum=1
-	//+kubebuilder:default=120
-	//+optional
-	ScaleDownStabilizationWindowSeconds *int32 `json:"scaleDownStabilizationWindowSeconds,omitempty"`
+	// Specifies the mode of scaling.
+	// Possible values are:
+	// - "Horizontal"
+	// - "Vertical"
+	// - "Hybrid"
+	// Defaults to 'Hybrid'
+	Mode ScaleMode `json:"mode"`
 
-	//MetricsCollectionInterval refers to the interval(second) at which the specified pod resource metrics are collected
-	//for predictive scaling. It defaults to 10 seconds.
-	//+kubebuilder:validation:Minimum=10
-	//+kubebuilder:default=10
-	//+optional
-	//MetricsCollectionInterval *int32 `json:"metricsCollectionInterval,omitempty"`
+	// The policy of vertical scaling.
+	// +optional
+	VerticalScalePolicy *VerticalScalePolicy `json:"verticalScalePolicy,omitempty"`
 
-	//MonitorWindowIntervalNum refers to the interval number of the monitor window used for pod resource prediction.
-	//+kubebuilder:validation:Minimum=2
-	//+kubebuilder:default=20
-	//+optional
-	MonitorWindowIntervalNum *int32 `json:"monitorWindowIntervalNum,omitempty"`
+	// The policy of horizontal scaling.
+	// +optional
+	HorizontalScalePolicy *HorizontalScalePolicy `json:"horizontalScalePolicy,omitempty"`
 
-	//Alpha defines a fixed alpha parameter for the DES algorithm. If not explicitly specified,
-	//an auto adjustment will be applied to alpha according to collected metrics.
-	//+optional
-	Alpha *string `json:"alpha"`
+	// The interval number of the monitor window used for resource prediction.
+	// Defaults to 20 and minimum is 2.
+	// +kubebuilder:default=20
+	// +kubebuilder:validation:Minimum=2
+	// +optional
+	MonitorWindowIntervalNum int32 `json:"monitorWindowIntervalNum"`
 
-	//Tolerance decides whether to scale pods if resource usage isn't that larger than the threshold.
-	//+optional
-	Tolerance *string `json:"tolerance"`
+	// The minimal interval(second) between scaling down.
+	// Defaults to 120 and minimum is 0.
+	// +kubebuilder:default=120
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ScaleDownStabilizationWindowSeconds int32 `json:"scaleDownStabilizationWindowSeconds"`
 
-	//CpuInitializationPeriod defines the period seconds after the pod starting when the pod is assumed being initialized,
-	//and thus any transition into readiness is the first one.
-	//+optional
-	CpuInitializationPeriod *string `json:"cpuInitializationPeriod,omitempty"`
+	// Only to scale when tolerance is smaller than the difference between current utilization and target range.
+	// Represented as a percentage.
+	// Defaults to 10 and minimum is 0.
+	// This is a pointer to distinguish between explicit zero and not specified.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Tolerance *int32 `json:"tolerance,omitempty"`
 
-	//DelayOfInitialReadinessStatus defines the period seconds after the pod starting when the pod is assumed to be
-	//still unready after last transition into unreadiness.
-	//+optional
-	DelayOfInitialReadinessStatus *string `json:"delayOfInitialReadinessStatus,omitempty"`
+	// CpuInitializationPeriod defines the period seconds after the pod starting when the pod is assumed being initialized,
+	// and thus any transition into readiness is the first one.
+	// Default to 5 minutes.
+	// +optional
+	CpuInitializationPeriod string `json:"cpuInitializationPeriod,omitempty"`
 
-	//ScaleHistoryLimit refers to the limit for the number of scaling history records. It defaults to 50 pieces.
-	//+kubebuilder:validation:Minimum=0
-	//+kubebuilder:default=20
-	//+optional
-	ScaleHistoryLimit *int32 `json:"scaleHistoryLimit"`
+	// DelayOfInitialReadinessStatus defines the period seconds after the pod starting when the pod is assumed to be
+	// still unready after last transition into unreadiness.
+	// Defaults to 30 seconds.
+	// +optional
+	DelayOfInitialReadinessStatus string `json:"delayOfInitialReadinessStatus,omitempty"`
+
+	// The limit for the number of scaling history records.
+	// Defaults to 20 and minimum is 0.
+	// This is a pointer to distinguish between explicit zero and not specified.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ScaleHistoryLimit *int32 `json:"scaleHistoryLimit,omitempty"`
 }
 
 // PredictiveHorizontalPodAutoscalerStatus defines the observed state of PredictiveHorizontalPodAutoscaler
@@ -150,28 +265,28 @@ type PredictiveHorizontalPodAutoscalerStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	//lastScaleTime is the last time the HorizontalPodAutoscaler scaled the number of pods, used by the
-	//autoscaler to control the scaling frequency.
-	//+optional
-	LastScaleTime *metav1.Time `json:"lastScaleTime,omitempty"`
+	// The current number of replicas of the target workload.
+	CurrentReplicas int32 `json:"currentReplicas,omitempty"`
 
-	//CurrentReplicas is current number of replicas of pods manager by this autoscaler, as last seen by the autoscaler.
-	CurrentReplicas *int32 `json:"currentReplicas"`
+	// The desired number of replicas of the target workload.
+	DesiredReplicas int32 `json:"desiredReplicas,omitempty"`
 
-	//desiredReplicas is the desired number of replicas of pods managered by this autoscaler.
-	DesiredReplicas *int32 `json:"desiredReplicas"`
-
-	//MetricsList contains the collected metrics within the monitor window.
-	//+optional
+	// Contains the collected metrics within the monitor window.
+	// +optional
 	MetricsList []MetricStatus `json:"metricsList"`
 
-	//ScaleEventsList contains the recent scaling events.
-	//+optional
+	// Contains the recent scaling events.
+	// +optional
 	ScaleEventsList []ScaleEvent `json:"scaleEventsList"`
 
-	//LastMonitorTime refers to the time when the last metrics are fetched and used to update PredictiveHorizontalPodAutoscalerStatus.
-	//+optional
-	LastMonitorTime *metav1.Time `json:"lastMonitorTime"`
+	// The last time the PredictiveHorizontalPodAutoscaler scales, used by the
+	// autoscaler to control the scaling frequency.
+	// +optional
+	LastScaleTime *metav1.Time `json:"lastScaleTime,omitempty"`
+
+	// Refers to the time when the last metrics are fetched and used to update PredictiveHorizontalPodAutoscalerStatus.
+	// +optional
+	LastMonitorTime *metav1.Time `json:"lastMonitorTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -186,7 +301,7 @@ type PredictiveHorizontalPodAutoscaler struct {
 	Status PredictiveHorizontalPodAutoscalerStatus `json:"status,omitempty"`
 }
 
-//+kubebuilder:object:root=true
+// +kubebuilder:object:root=true
 
 // PredictiveHorizontalPodAutoscalerList contains a list of PredictiveHorizontalPodAutoscaler
 type PredictiveHorizontalPodAutoscalerList struct {

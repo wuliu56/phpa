@@ -39,83 +39,99 @@ spec:
             description: PredictiveHorizontalPodAutoscalerSpec defines the desired
               state of PredictiveHorizontalPodAutoscaler
             properties:
-              alpha:
-                description: Alpha defines a fixed alpha parameter for the DES algorithm.
-                  If not explicitly specified, an auto adjustment will be applied
-                  to alpha according to collected metrics.
-                type: string
               cpuInitializationPeriod:
                 description: CpuInitializationPeriod defines the period seconds after
                   the pod starting when the pod is assumed being initialized, and
-                  thus any transition into readiness is the first one.
+                  thus any transition into readiness is the first one. Default to
+                  5 minutes.
                 type: string
               delayOfInitialReadinessStatus:
                 description: DelayOfInitialReadinessStatus defines the period seconds
                   after the pod starting when the pod is assumed to be still unready
-                  after last transition into unreadiness.
+                  after last transition into unreadiness. Defaults to 30 seconds.
                 type: string
+              horizontalScalePolicy:
+                description: The policy of horizontal scaling.
+                properties:
+                  alpha:
+                    description: Alpha for the DES algorithm. If not explicitly specified,
+                      the auto adjustment will be applied to alpha according to collected
+                      metrics.
+                    type: string
+                type: object
               maxReplicas:
-                description: MaxReplicas is the upper limit for the number of replicas
-                  to which the autoscaler can scale up.
+                description: The upper limit for the number of replicas to which the
+                  autoscaler can scale up.
                 format: int32
                 minimum: 1
                 type: integer
               metrics:
-                description: Metrics contains the specifications for which to use
-                  to to calculate the desired replica count. Here multi-metrics haven't
-                  been applied, and only resource metrics are supported.
+                description: The target metric used to calculate the desired replica
+                  count. Here multi-metrics haven't been applied, and only resource
+                  metrics are supported.
                 properties:
-                  name:
-                    description: Name is the name of the resource in question.
-                    type: string
-                  targetAverageUtilization:
-                    description: TargetAverageUtilization is the target value of the
-                      average of the resource metric across all relevant pods, represented
-                      as a percentage of the requested value of the resource for the
-                      pods.
+                  lowerTargetUtilization:
+                    default: 0
+                    description: The lower target utilization of the average of the
+                      resource metric across all relevant pods, represented as a percentage
+                      of the requested value of the resource for the pods. Defaults
+                      to 0 and minimum is 0.
                     format: int32
+                    minimum: 0
                     type: integer
-                  targetAverageValue:
-                    anyOf:
-                    - type: integer
-                    - type: string
-                    description: TargetAverageValue is the target value of the resource
-                      metric across all relevant pods, as a raw value.
-                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                    x-kubernetes-int-or-string: true
+                  name:
+                    description: The name of the resource in question.
+                    type: string
+                  upperTargetUtilization:
+                    default: 80
+                    description: The upper target utilization of the average of the
+                      resource metric across all relevant pods, represented as a percentage
+                      of the requested value of the resource for the pods. Defaults
+                      to 80 and minimum is 0.
+                    format: int32
+                    minimum: 0
+                    type: integer
                 required:
                 - name
                 type: object
               minReplicas:
                 default: 1
-                description: MinReplicas is the lower limit for the number of replicas
-                  to which the autoscaler can scale down. It defaults to 1 pod.
+                description: The lower limit for the number of replicas to which the
+                  autoscaler can scale down. Defaults to 1 and minimum is 1.
                 format: int32
+                minimum: 1
                 type: integer
+              mode:
+                description: 'Specifies the mode of scaling. Possible values are:
+                  - "Horizontal" - "Vertical" - "Hybrid" Defaults to ''Hybrid'''
+                enum:
+                - Horizontal
+                - Vertical
+                - Hybrid
+                type: string
               monitorWindowIntervalNum:
                 default: 20
-                description: MonitorWindowIntervalNum refers to the interval number
-                  of the monitor window used for pod resource prediction.
+                description: The interval number of the monitor window used for resource
+                  prediction. Defaults to 20 and minimum is 2.
                 format: int32
                 minimum: 2
                 type: integer
               scaleDownStabilizationWindowSeconds:
                 default: 120
-                description: ScaleDownStabilizationWindowSeconds refers to the minimum
-                  interval(second) between pod scaling down.
+                description: The minimal interval(second) between scaling down. Defaults
+                  to 120 and minimum is 0.
                 format: int32
-                minimum: 1
+                minimum: 0
                 type: integer
               scaleHistoryLimit:
-                default: 20
-                description: ScaleHistoryLimit refers to the limit for the number
-                  of scaling history records. It defaults to 50 pieces.
+                description: The limit for the number of scaling history records.
+                  Defaults to 20 and minimum is 0. This is a pointer to distinguish
+                  between explicit zero and not specified.
                 format: int32
                 minimum: 0
                 type: integer
               scaleTargetRef:
-                description: ScaleTargetRef refers to the workload resource to be
-                  scaled.
+                description: Refers to the workload resource to be scaled.
                 properties:
                   apiVersion:
                     description: API version of the referent
@@ -131,11 +147,78 @@ spec:
                 - name
                 type: object
               tolerance:
-                description: Tolerance decides whether to scale pods if resource usage
-                  isn't that larger than the threshold.
-                type: string
+                description: Only to scale when tolerance is smaller than the difference
+                  between current utilization and target range. Represented as a percentage.
+                  Defaults to 10 and minimum is 0. This is a pointer to distinguish
+                  between explicit zero and not specified.
+                format: int32
+                minimum: 0
+                type: integer
+              verticalScalePolicy:
+                description: The policy of vertical scaling.
+                properties:
+                  containerResourcePolicies:
+                    description: Per-container resource policies.
+                    items:
+                      description: Specifies container resource policy.
+                      properties:
+                        containerName:
+                          description: Name of the container or DefaultContainerResourcePolicy,
+                            in which case the policy is used by the containers that
+                            don't have their own policy specified.
+                          type: string
+                        maxAllowed:
+                          additionalProperties:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          description: Specifies the maximal amount of resources that
+                            the container can be scaled up to. The default is no maximum.
+                          type: object
+                        minAllowed:
+                          additionalProperties:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          description: Specifies the minimal amount of resources that
+                            the container can be scaled down to. The default is no
+                            minimum.
+                          type: object
+                      type: object
+                    type: array
+                  evictionTolerance:
+                    default: 50
+                    description: Fraction of replica count that can be evicted for
+                      update, if more than one pod can be evicted. Represented as
+                      a percentage. Defaults to 50 and minimum is 1.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  serviceLabelSelector:
+                    additionalProperties:
+                      type: string
+                    description: Label selector of the service that points to the
+                      target pods.
+                    type: object
+                  type:
+                    description: 'The policy type of vertical scaling. Possible values
+                      are: - "Normal" - "Available" - "Safe" Defaults to ''Normal'''
+                    enum:
+                    - Normal
+                    - Available
+                    - Safe
+                    type: string
+                required:
+                - type
+                type: object
             required:
             - maxReplicas
+            - metrics
+            - mode
             - scaleTargetRef
             type: object
           status:
@@ -143,78 +226,81 @@ spec:
               state of PredictiveHorizontalPodAutoscaler
             properties:
               currentReplicas:
-                description: CurrentReplicas is current number of replicas of pods
-                  manager by this autoscaler, as last seen by the autoscaler.
+                description: The current number of replicas of the target workload.
                 format: int32
                 type: integer
               desiredReplicas:
-                description: desiredReplicas is the desired number of replicas of
-                  pods managered by this autoscaler.
+                description: The desired number of replicas of the target workload.
                 format: int32
                 type: integer
               lastMonitorTime:
-                description: LastMonitorTime refers to the time when the last metrics
-                  are fetched and used to update PredictiveHorizontalPodAutoscalerStatus.
+                description: Refers to the time when the last metrics are fetched
+                  and used to update PredictiveHorizontalPodAutoscalerStatus.
                 format: date-time
                 type: string
               lastScaleTime:
-                description: lastScaleTime is the last time the HorizontalPodAutoscaler
-                  scaled the number of pods, used by the autoscaler to control the
-                  scaling frequency.
+                description: The last time the PredictiveHorizontalPodAutoscaler scales,
+                  used by the autoscaler to control the scaling frequency.
                 format: date-time
                 type: string
               metricsList:
-                description: MetricsList contains the collected metrics within the
-                  monitor window.
+                description: Contains the collected metrics within the monitor window.
                 items:
                   properties:
                     currentUtilization:
-                      description: CurrentUtilization is the current value of the
-                        resource metric across all relevant pods, represented as a
-                        percentage of the requested value of the resource for the
-                        pods. It will only be present if `targetAverageUtilization`
-                        was set in the corresponding metric specification.
+                      description: The current value of the resource metric across
+                        all relevant pods, represented as a percentage of the requested
+                        value of the resource for the pods.
                       format: int32
                       type: integer
                     currentValue:
                       anyOf:
                       - type: integer
                       - type: string
-                      description: CurrentAverageUtilization is the current value
-                        of the resource metric across all relevant pods, represented
-                        as the raw value of the requested value of the resource for
-                        the pods. It will always be present.
+                      description: The current value of the resource metric across
+                        all relevant pods, represented as the raw value sum of the
+                        requested value of the resource for the pods.
                       pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                       x-kubernetes-int-or-string: true
                     name:
-                      description: Name is the name of the resource in question.
+                      description: The name of the resource in question.
                       type: string
                   required:
+                  - currentUtilization
                   - name
                   type: object
                 type: array
               scaleEventsList:
-                description: ScaleEventsList contains the recent scaling events.
+                description: Contains the recent scaling events.
                 items:
-                  description: ScaleEvent records the information of a scaling event,
-                    including its happening time and desired replicas.
+                  description: ScaleEvent records the information of a scaling event.
                   properties:
                     replicas:
-                      description: Replicas is the replica count of a scaling.
+                      description: Count of desired replicas.
                       format: int32
                       type: integer
+                    request:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      description: The desired pod request.
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
                     time:
-                      description: HappeningTime is the time when a scaling happens.
+                      description: The time when a scaling happens.
                       format: date-time
+                      type: string
+                    type:
+                      description: 'Type of scaling. Possible values are: - "Horizontal"
+                        - "Vertical"'
                       type: string
                   required:
                   - replicas
+                  - request
                   - time
+                  - type
                   type: object
                 type: array
-            required:
-            - currentReplicas
-            - desiredReplicas
             type: object
         type: object
     served: true
