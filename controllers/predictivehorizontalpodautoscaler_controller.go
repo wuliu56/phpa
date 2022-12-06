@@ -131,6 +131,7 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 	scaleDownStabilizationWindowSeconds := spec.ScaleDownStabilizationWindowSeconds
 	scaleTargetRef := spec.ScaleTargetRef
 	targetMetricSource := spec.Metrics
+	mode := spec.Mode
 
 	// Judge if a new round of monitoring is necessary.
 	// If not, end the reconcile.
@@ -217,7 +218,7 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 	}
 
 	// Construct the new metric status list and predict the next metric.
-	currentMetricStatus, metricsLength := r.getCurrentMetricStatus(podList.Items, metrics, podRequest, resourceName)
+	currentMetricStatus, metricsLength := r.getCurrentMetricStatus(podList.Items, metrics, podRequest, resourceName, mode, targetMetricSource)
 	totalRequest := podRequest * int64(metricsLength)
 	constructPHPAMetricsList(&phpa, currentMetricStatus)
 	log.V(1).Info("predict the metric at the next interval")
@@ -522,18 +523,47 @@ func calcCurrentResourceUtilization(resourceValue *resource.Quantity, request in
 // getMetricsStatus transforms the metrics fetched from metricsclient into the format of autoscalingv1.MetricStatus,
 // which container the name, value and utilization of pods resource.
 // This first removes metrics from unready and ignored pods.
-func (r *PredictiveHorizontalPodAutoscalerReconciler) getCurrentMetricStatus(pods []corev1.Pod, metrics metricsclient.PodMetricsInfo, request int64, resourceName corev1.ResourceName) (currentMetricStatus *autoscalingv1.MetricStatus, metricLength int32) {
+func (r *PredictiveHorizontalPodAutoscalerReconciler) getCurrentMetricStatus(pods []corev1.Pod, metrics metricsclient.PodMetricsInfo, request int64, resourceName corev1.ResourceName, mode autoscalingv1.ScaleMode, targetMetricSource *autoscalingv1.MetricSource) (currentMetricStatus *autoscalingv1.MetricStatus, metricLength int32) {
 	// Copy PodMetricsInfo from metrics and remove unready and ignored pods.
 	removedMetrics := make(metricsclient.PodMetricsInfo, len(metrics))
 	for i, k := range metrics {
 		removedMetrics[i] = k
 	}
-	_, unreadyPods, _, ignoredPods := groupPods(pods, metrics, resourceName, r.CpuInitializationPeriod, r.DelayOfInitialReadinessStatus)
-	removeMetricsForPods(metrics, unreadyPods)
-	removeMetricsForPods(metrics, ignoredPods)
+	_, unreadyPods, missingPods, ignoredPods := groupPods(pods, metrics, resourceName, r.CpuInitializationPeriod, r.DelayOfInitialReadinessStatus)
+	removeMetricsForPods(removedMetrics, unreadyPods)
+	removeMetricsForPods(removedMetrics, ignoredPods)
 
-	currentValue := calcCurrentResourceValue(metrics, resourceName)
-	currentUtilization := calcCurrentResourceUtilization(currentValue, request*int64(len(metrics)), resourceName)
+	var targetUtilization int32
+	switch mode {
+	case autoscalingv1.ScaleModeHorizontal:
+		targetUtilization = targetMetricSource.UpperTargetUtilization
+	case autoscalingv1.ScaleModeVertical:
+		targetUtilization = targetMetricSource.LowerTargetUtilization
+	}
+
+	usageRatio, _, _ := calcUtilizationUsageRatio(metrics, request, targetUtilization)
+	scaledUpWithUnready := len(unreadyPods) > 0 && usageRatio > 1.0
+
+	if len(missingPods) > 0 {
+		if usageRatio < 1.0 {
+			missingPodUtilization := int64(math.Max(100, float64(targetUtilization)))
+			for podName := range missingPods {
+				removedMetrics[podName] = metricsclient.PodMetric{Value: missingPodUtilization / 100 * request}
+			}
+		} else if usageRatio > 1.0 {
+			for podName := range missingPods {
+				removedMetrics[podName] = metricsclient.PodMetric{Value: 0}
+			}
+		}
+	}
+	if scaledUpWithUnready {
+		for podName := range unreadyPods {
+			removedMetrics[podName] = metricsclient.PodMetric{Value: 0}
+		}
+	}
+
+	currentValue := calcCurrentResourceValue(removedMetrics, resourceName)
+	currentUtilization := calcCurrentResourceUtilization(currentValue, request*int64(len(removedMetrics)), resourceName)
 	return &autoscalingv1.MetricStatus{
 		Name:               resourceName,
 		CurrentValue:       currentValue,

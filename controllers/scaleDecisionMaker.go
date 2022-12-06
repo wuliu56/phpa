@@ -243,7 +243,6 @@ func (v VerticalScaleDecisionMaker) computeDesiredResourceRequirementsByPredicte
 	targetResourceName := v.targetMetricSource.Name
 	nextUtilization := v.nextMetricStatus.CurrentUtilization
 
-	//calculate
 	resourceRequirementsMap := calcMultipliedResourceRequirementsMap(podSample, targetResourceName, 1.0)
 	requestQuantity := calcMultipliedRequestQuantity(v.podRequestMilliValue, targetResourceName, 1.0)
 
@@ -254,7 +253,7 @@ func (v VerticalScaleDecisionMaker) computeDesiredResourceRequirementsByPredicte
 	if math.Abs(nextUsageRatio-1.0) <= float64(v.tolerance) {
 		return resourceRequirementsMap, *requestQuantity
 	}
-	//desired requests/limits = current requests/limits * usageRatio
+	// desired requests/limits = current requests/limits * usageRatio
 	desiredResourceRequirementsMap := calcMultipliedResourceRequirementsMap(podSample, targetResourceName, nextUsageRatio)
 	desiredRequestQuantity := calcMultipliedRequestQuantity(v.podRequestMilliValue, targetResourceName, nextUsageRatio)
 	return desiredResourceRequirementsMap, *desiredRequestQuantity
