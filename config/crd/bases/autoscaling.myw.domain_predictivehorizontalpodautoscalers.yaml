@@ -233,14 +233,50 @@ spec:
                 description: The desired number of replicas of the target workload.
                 format: int32
                 type: integer
+              desiredResourceRequirements:
+                additionalProperties:
+                  description: ResourceRequirements describes the compute resource
+                    requirements.
+                  properties:
+                    limits:
+                      additionalProperties:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      description: 'Limits describes the maximum amount of compute
+                        resources allowed. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/'
+                      type: object
+                    requests:
+                      additionalProperties:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      description: 'Requests describes the minimum amount of compute
+                        resources required. If Requests is omitted for a container,
+                        it defaults to Limits if that is explicitly specified, otherwise
+                        to an implementation-defined value. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/'
+                      type: object
+                  type: object
+                description: The desired resource requirements for the target containers.
+                type: object
+              lastHorizontalScaleTime:
+                description: The last time the PredictiveHorizontalPodAutoscaler horizontally
+                  scales, used by the autoscaler to control the scaling frequency.
+                format: date-time
+                type: string
               lastMonitorTime:
                 description: Refers to the time when the last metrics are fetched
                   and used to update PredictiveHorizontalPodAutoscalerStatus.
                 format: date-time
                 type: string
-              lastScaleTime:
-                description: The last time the PredictiveHorizontalPodAutoscaler scales,
-                  used by the autoscaler to control the scaling frequency.
+              lastVerticalScaleTime:
+                description: The last time the PredictiveHorizontalPodAutoscaler vertically
+                  scales, used by the autoscaler to control the scaling frequency
+                  and ensure scaling completed.
                 format: date-time
                 type: string
               metricsList:

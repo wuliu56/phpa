@@ -12,7 +12,13 @@ spec:
     lowerTargetUtilization: 60
     upperTargetUtilization: 80
   maxReplicas: 20
-  mode: Horizontal
+  mode: Vertical
   verticalScalePolicy:
     type: Normal
     evictionTolerance: 50
+    # containerResourcePolicies: 
+    # - containerName: nginx
+    #   minAllowed:
+    #     cpu: 30m
+    #   maxAllowed:
+    #     cpu: 40m

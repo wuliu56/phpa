@@ -271,6 +271,9 @@ type PredictiveHorizontalPodAutoscalerStatus struct {
 	// The desired number of replicas of the target workload.
 	DesiredReplicas int32 `json:"desiredReplicas,omitempty"`
 
+	// The desired resource requirements for the target containers.
+	DesiredResourceRequirements map[string]v1.ResourceRequirements `json:"desiredResourceRequirements,omitempty"`
+
 	// Contains the collected metrics within the monitor window.
 	// +optional
 	MetricsList []MetricStatus `json:"metricsList"`
@@ -279,10 +282,15 @@ type PredictiveHorizontalPodAutoscalerStatus struct {
 	// +optional
 	ScaleEventsList []ScaleEvent `json:"scaleEventsList"`
 
-	// The last time the PredictiveHorizontalPodAutoscaler scales, used by the
+	// The last time the PredictiveHorizontalPodAutoscaler horizontally scales, used by the
 	// autoscaler to control the scaling frequency.
 	// +optional
-	LastScaleTime *metav1.Time `json:"lastScaleTime,omitempty"`
+	LastHorizontalScaleTime *metav1.Time `json:"lastHorizontalScaleTime,omitempty"`
+
+	// The last time the PredictiveHorizontalPodAutoscaler vertically scales, used by the
+	// autoscaler to control the scaling frequency and ensure scaling completed.
+	// +optional
+	LastVerticalScaleTime *metav1.Time `json:"lastVerticalScaleTime,omitempty"`
 
 	// Refers to the time when the last metrics are fetched and used to update PredictiveHorizontalPodAutoscalerStatus.
 	// +optional

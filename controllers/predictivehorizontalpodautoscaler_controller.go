@@ -53,48 +53,6 @@ type PredictiveHorizontalPodAutoscalerReconciler struct {
 	ScaleHistoryLimit             int32
 }
 
-type ScaleExecutor interface {
-	// Scale with desired replicas and container resource requirements.
-	// Return true if scaled and false if not.
-	// Also return error.
-	scaleWithDesiredStrategy(int32, map[string]corev1.ResourceRequirements) (bool, error)
-}
-
-type HorizontalScaleExecutor struct {
-	ctx context.Context
-	client.Client
-	deployment                           *appsv1.Deployment
-	currentReplicas                      int32
-	scaleDownStabilizationWindowDuration *time.Duration
-	lastScaleTime                        *metav1.Time
-}
-
-func (h HorizontalScaleExecutor) scaleWithDesiredStrategy(desiredReplicas int32, desiredResourceRequirements map[string]corev1.ResourceRequirements) (bool, error) {
-	if desiredReplicas == h.currentReplicas {
-		return false, nil
-	} else if desiredReplicas > h.currentReplicas {
-		h.deployment.Spec.Replicas = &desiredReplicas
-		if err := h.Update(h.ctx, h.deployment); err != nil {
-			return true, err
-		}
-		return true, nil
-	} else {
-		ifScale := false
-		if h.lastScaleTime != nil {
-			ifScale = time.Now().After(h.lastScaleTime.Time.Add(*h.scaleDownStabilizationWindowDuration))
-		} else {
-			ifScale = true
-		}
-		if ifScale {
-			h.deployment.Spec.Replicas = &desiredReplicas
-			if err := h.Update(h.ctx, h.deployment); err != nil {
-				return true, err
-			}
-		}
-		return ifScale, nil
-	}
-}
-
 //+kubebuilder:rbac:groups=autoscaling.myw.domain,resources=predictivehorizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=autoscaling.myw.domain,resources=predictivehorizontalpodautoscalers/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=autoscaling.myw.domain,resources=predictivehorizontalpodautoscalers/finalizers,verbs=update
@@ -128,7 +86,7 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 	status := phpa.Status.DeepCopy()
 	maxReplicas := spec.MaxReplicas
 	minReplicas := spec.MinReplicas
-	scaleDownStabilizationWindowSeconds := spec.ScaleDownStabilizationWindowSeconds
+	// scaleDownStabilizationWindowSeconds := spec.ScaleDownStabilizationWindowSeconds
 	scaleTargetRef := spec.ScaleTargetRef
 	targetMetricSource := spec.Metrics
 	mode := spec.Mode
@@ -230,7 +188,7 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 
 	// Create the scale decision maker and scale executor according to the mode.
 	var scaleDecisionMaker ScaleDecisionMaker
-	var scaleExecutor ScaleExecutor
+	// var scaleExecutor ScaleExecutor
 	switch spec.Mode {
 	case autoscalingv1.ScaleModeHorizontal:
 		{
@@ -247,15 +205,15 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 				delayOfInitialReadinessStatus: &r.DelayOfInitialReadinessStatus,
 				tolerance:                     r.Tolerance,
 			}
-			scaleDownStabilizationWindowDuration := time.Duration(scaleDownStabilizationWindowSeconds) * time.Second
-			scaleExecutor = HorizontalScaleExecutor{
-				ctx:                                  ctx,
-				Client:                               r.Client,
-				deployment:                           &deployment,
-				currentReplicas:                      currentReplicas,
-				scaleDownStabilizationWindowDuration: &scaleDownStabilizationWindowDuration,
-				lastScaleTime:                        phpa.Status.LastScaleTime,
-			}
+			// scaleDownStabilizationWindowDuration := time.Duration(scaleDownStabilizationWindowSeconds) * time.Second
+			// scaleExecutor = HorizontalScaleExecutor{
+			// 	ctx:                                  ctx,
+			// 	Client:                               r.Client,
+			// 	deployment:                           &deployment,
+			// 	currentReplicas:                      currentReplicas,
+			// 	scaleDownStabilizationWindowDuration: &scaleDownStabilizationWindowDuration,
+			// 	lastScaleTime:                        phpa.Status.LastScaleTime,
+			// }
 		}
 	case autoscalingv1.ScaleModeVertical:
 		{
@@ -269,6 +227,7 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 				cpuInitializationPeriod:       &r.CpuInitializationPeriod,
 				delayOfInitialReadinessStatus: &r.DelayOfInitialReadinessStatus,
 				tolerance:                     r.Tolerance,
+				verticalScalePolicy:           *phpa.Spec.VerticalScalePolicy,
 			}
 		}
 	}
@@ -277,37 +236,50 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 	desiredReplicas := scaleDecisionMaker.computeDesiredReplicas()
 	desiredResourceRequirements, desiredPodRequestQuantity := scaleDecisionMaker.computeDesiredResourceRequirements()
 	fmt.Printf("current metric status: %v\n", currentMetricStatus)
-	fmt.Printf("next metric status: %v\n", nextMetricStatus)
-	fmt.Printf("current resources requirements: request: %v, limit: %v\n", podList.Items[0].Spec.Containers[0].Resources.Requests[corev1.ResourceCPU],
-		podList.Items[0].Spec.Containers[0].Resources.Limits[corev1.ResourceCPU])
-	fmt.Printf("desired resources requirements: request: %v, limit: %v\n", desiredResourceRequirements["nginx"].Requests[corev1.ResourceCPU],
-		desiredResourceRequirements["nginx"].Limits[corev1.ResourceCPU])
+	fmt.Printf("predicted next metric status: %v\n", nextMetricStatus)
+	fmt.Printf("current resources requirements: \n")
+	for i, c := range podList.Items[0].Spec.Containers {
+		fmt.Printf("resources of %vth container: %v\n", i, c.Resources)
+	}
+	fmt.Printf("desired resources requirements: %v\n", desiredResourceRequirements)
 	fmt.Printf("current pod request quantity: %v\n", podRequest)
 	fmt.Printf("desired pod request quantity: %v\n", desiredPodRequestQuantity)
 
-	// Refactor the final desired replicas based on the minReplicas and maxReplicas.
 	phpa.Status.CurrentReplicas = currentReplicas
 	phpa.Status.DesiredReplicas = desiredReplicas
+	phpa.Status.DesiredResourceRequirements = desiredResourceRequirements
 
 	// Do the scaling and record the scale event.
-	ifScaled, err := scaleExecutor.scaleWithDesiredStrategy(desiredReplicas, desiredResourceRequirements)
-	if err != nil {
-		log.Error(err, "failed to scale")
-		return ctrl.Result{}, err
+	// ifScaled, err := scaleExecutor.scaleWithDesiredStrategy(desiredReplicas, desiredResourceRequirements)
+	// if err != nil {
+	// 	log.Error(err, "failed to scale")
+	// 	return ctrl.Result{}, err
+	// }
+	// if ifScaled {
+	// 	nowTime := metav1.Time{Time: time.Now()}
+	// 	phpa.Status.LastScaleTime = &nowTime
+	// 	newScaleEvent := autoscalingv1.ScaleEvent{
+	// 		Time:     &nowTime,
+	// 		Type:     "Horizontal",
+	// 		Replicas: desiredReplicas,
+	// 		Request:  desiredPodRequestQuantity,
+	// 	}
+	// 	r.recordScaleEvent(&phpa, newScaleEvent)
+	// 	log.V(0).Info("successfully scaled", "scale event", newScaleEvent)
+	// } else {
+	// 	log.V(0).Info("not to scale because of the same desired replicas with current replicas or too often scaling down")
+	// }
+
+	// Add a label to phpa as deployment reference
+	if phpa.Labels == nil {
+		phpa.Labels = make(map[string]string)
 	}
-	if ifScaled {
-		nowTime := metav1.Time{Time: time.Now()}
-		phpa.Status.LastScaleTime = &nowTime
-		newScaleEvent := autoscalingv1.ScaleEvent{
-			Time:     &nowTime,
-			Type:     "Horizontal",
-			Replicas: desiredReplicas,
-			Request:  desiredPodRequestQuantity,
+	if _, exists := phpa.Labels["target-reference"]; !exists {
+		phpa.Labels["target-reference"] = namespace + "-" + deploymentName
+		if err := r.Update(ctx, &phpa); err != nil {
+			log.Error(err, "unable to add the label of target reference")
+			return ctrl.Result{}, err
 		}
-		r.recordScaleEvent(&phpa, newScaleEvent)
-		log.V(0).Info("successfully scaled", "scale event", newScaleEvent)
-	} else {
-		log.V(0).Info("not to scale because of the same desired replicas with current replicas or too often scaling down")
 	}
 
 	// Update the phpa status.
@@ -472,27 +444,14 @@ func groupPods(podList []corev1.Pod, metrics metricsclient.PodMetricsInfo, resou
 // calcPodResourceRequest gets the resource request quantity specified by resourceName for each pod.
 func calcPodResourceRequest(podSample *corev1.Pod, resourceName corev1.ResourceName) (int64, error) {
 	podRequest := int64(0)
-	if resourceName == corev1.ResourceCPU {
-		for _, c := range podSample.Spec.Containers {
-			if c.Resources.Requests == nil {
-				return 0, fmt.Errorf("no resource request for cpu of the container: %v", c.Name)
-			}
-			if c.Resources.Limits == nil {
-				return 0, fmt.Errorf("no resource limit for cpu of the container: %v", c.Name)
-			}
-			podRequest += c.Resources.Requests.Cpu().MilliValue()
+	for _, c := range podSample.Spec.Containers {
+		if c.Resources.Requests == nil {
+			return 0, fmt.Errorf("no resource request of the container: %v", c.Name)
 		}
-	}
-	if resourceName == corev1.ResourceMemory {
-		for _, c := range podSample.Spec.Containers {
-			if c.Resources.Requests == nil {
-				return 0, fmt.Errorf("no resource request for memory of the container: %v", c.Name)
-			}
-			if c.Resources.Limits == nil {
-				return 0, fmt.Errorf("no resource limit for memory of the container: %v", c.Name)
-			}
-			podRequest += c.Resources.Requests.Memory().MilliValue()
+		if c.Resources.Limits == nil {
+			return 0, fmt.Errorf("no resource limit of the container: %v", c.Name)
 		}
+		podRequest += getQuantityForTargetResource(c.Resources.Requests, resourceName).MilliValue()
 	}
 	return podRequest, nil
 }
@@ -619,6 +578,15 @@ func constructPHPAMetricsList(phpa *autoscalingv1.PredictiveHorizontalPodAutosca
 	} else {
 		metricsList := metricsList[1:monitorWindow:monitorWindow]
 		phpa.Status.MetricsList = append(metricsList, *metricStatus)
+	}
+}
+
+// Get quantity of target resource from resourceList.
+func getQuantityForTargetResource(resourceList corev1.ResourceList, targetResource corev1.ResourceName) *resource.Quantity {
+	if targetResource == corev1.ResourceCPU {
+		return resourceList.Cpu()
+	} else {
+		return resourceList.Memory()
 	}
 }
 

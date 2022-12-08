@@ -17,7 +17,11 @@ limitations under the License.
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -26,13 +30,21 @@ import (
 
 	"time"
 
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	autoscalingv1 "myw.domain/autoscaling/api/v1"
 	"myw.domain/autoscaling/controllers"
 	//+kubebuilder:scaffold:imports
@@ -46,6 +58,72 @@ const (
 	DefaultTolerance                     float32 = 0.1
 	DefaultScaleHistoryLimit             int32   = 20
 )
+
+const (
+	targetMiddleGV   = "apps/v1"
+	targetMiddleKind = "ReplicaSet"
+	targetGV         = "apps/v1"
+	targetKind       = "Deployment"
+)
+
+// +kubebuilder:webhook:path=/mutate-v1-pod,mutating=true,failurePolicy=fail,groups="",resources=pods,verbs=create;update,versions=v1,name=mpod.kb.io,sideEffects=None,admissionReviewVersions=v1
+type PodResourceAllocator struct {
+	Client  client.Client
+	decoder *admission.Decoder
+}
+
+func (ra *PodResourceAllocator) Handle(ctx context.Context, req admission.Request) admission.Response {
+	fmt.Println("webhook handle")
+	pod := &corev1.Pod{}
+
+	err := ra.decoder.Decode(req, pod)
+	if err != nil {
+		return admission.Errored(http.StatusBadRequest, err)
+	}
+
+	// List phpa that matches the target deployment(replicaset/pod).
+	phpa := &autoscalingv1.PredictiveHorizontalPodAutoscaler{}
+	phpaList := &autoscalingv1.PredictiveHorizontalPodAutoscalerList{}
+	for _, ownerReference := range pod.GetOwnerReferences() {
+		if ownerReference.APIVersion == targetMiddleGV && ownerReference.Kind == targetMiddleKind {
+			rsNamespacedName := types.NamespacedName{
+				Namespace: req.Namespace,
+				Name:      ownerReference.Name,
+			}
+			replicaSet := &appsv1.ReplicaSet{}
+			err := ra.Client.Get(ctx, rsNamespacedName, replicaSet)
+			if err == nil {
+				key := "target-reference"
+				val := req.Namespace + "-" + replicaSet.OwnerReferences[0].Name
+				require, _ := labels.NewRequirement(key, selection.In, []string{val})
+				selector := labels.NewSelector().Add(*require)
+				err := ra.Client.List(ctx, phpaList, &client.ListOptions{LabelSelector: selector})
+				if err == nil && len(phpaList.Items) != 0 {
+					*phpa = phpaList.Items[0]
+					break
+				}
+			}
+		}
+	}
+
+	// If corresponding phpa found, mutate the pod Spec.
+	if len(phpaList.Items) > 0 {
+		for _, c := range pod.Spec.Containers {
+			c.Resources = phpa.Status.DesiredResourceRequirements[c.Name]
+		}
+	}
+
+	marshaledPod, err := json.Marshal(pod)
+	if err != nil {
+		return admission.Errored(http.StatusInternalServerError, err)
+	}
+	return admission.PatchResponseFromRaw(req.Object.Raw, marshaledPod)
+}
+
+func (ra *PodResourceAllocator) InjectDecoder(d *admission.Decoder) error {
+	ra.decoder = d
+	return nil
+}
 
 var (
 	scheme   = runtime.NewScheme()
@@ -129,6 +207,9 @@ func main() {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
+
+	// Register the webhook path with the corresponding handler into the webhook server.
+	mgr.GetWebhookServer().Register("/mutate-v1-pod", &webhook.Admission{Handler: &PodResourceAllocator{Client: mgr.GetClient()}})
 
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
