@@ -49,7 +49,7 @@ vars:
     kind: Certificate
     group: cert-manager.io
     version: v1
-    name: cert-manager # this name should match the one in certificate.yaml
+    name: serving-cert # this name should match the one in certificate.yaml
   fieldref:
     fieldpath: metadata.namespace
 - name: CERTIFICATE_NAME
@@ -57,7 +57,7 @@ vars:
     kind: Certificate
     group: cert-manager.io
     version: v1
-    name: ca-crt # this name should match the one in certificate.yaml
+    name: serving-cert # this name should match the one in certificate.yaml
 - name: SERVICE_NAMESPACE # namespace of the service
   objref:
     kind: Service

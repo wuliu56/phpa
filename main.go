@@ -45,6 +45,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+
 	autoscalingv1 "myw.domain/autoscaling/api/v1"
 	"myw.domain/autoscaling/controllers"
 	//+kubebuilder:scaffold:imports
@@ -66,7 +67,7 @@ const (
 	targetKind       = "Deployment"
 )
 
-// +kubebuilder:webhook:path=/mutate-v1-pod,mutating=true,failurePolicy=fail,groups="",resources=pods,verbs=create;update,versions=v1,name=mpod.kb.io,sideEffects=None,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-v1-pod,mutating=true,failurePolicy=fail,groups="",resources=pods,verbs=create,versions=v1,name=mpod.kb.io,sideEffects=None,admissionReviewVersions=v1
 type PodResourceAllocator struct {
 	Client  client.Client
 	decoder *admission.Decoder
@@ -92,6 +93,7 @@ func (ra *PodResourceAllocator) Handle(ctx context.Context, req admission.Reques
 			}
 			replicaSet := &appsv1.ReplicaSet{}
 			err := ra.Client.Get(ctx, rsNamespacedName, replicaSet)
+			fmt.Printf("查询到replicaset：%v\n", replicaSet)
 			if err == nil {
 				key := "target-reference"
 				val := req.Namespace + "-" + replicaSet.OwnerReferences[0].Name
@@ -99,6 +101,7 @@ func (ra *PodResourceAllocator) Handle(ctx context.Context, req admission.Reques
 				selector := labels.NewSelector().Add(*require)
 				err := ra.Client.List(ctx, phpaList, &client.ListOptions{LabelSelector: selector})
 				if err == nil && len(phpaList.Items) != 0 {
+					fmt.Printf("完成phpa和replicaset的匹配\n")
 					*phpa = phpaList.Items[0]
 					break
 				}
@@ -108,10 +111,11 @@ func (ra *PodResourceAllocator) Handle(ctx context.Context, req admission.Reques
 
 	// If corresponding phpa found, mutate the pod Spec.
 	if len(phpaList.Items) > 0 {
-		for _, c := range pod.Spec.Containers {
-			c.Resources = phpa.Status.DesiredResourceRequirements[c.Name]
+		for i, c := range pod.Spec.Containers {
+			pod.Spec.Containers[i].Resources = phpa.Status.DesiredResourceRequirements[c.Name]
 		}
 	}
+	fmt.Printf("最终pod：%v\n", pod)
 
 	marshaledPod, err := json.Marshal(pod)
 	if err != nil {
@@ -197,6 +201,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "PredictiveHorizontalPodAutoscaler")
 		os.Exit(1)
 	}
+
 	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
