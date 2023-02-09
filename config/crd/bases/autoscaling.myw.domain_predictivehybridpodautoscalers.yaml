@@ -5,22 +5,22 @@ metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.9.2
   creationTimestamp: null
-  name: predictivehorizontalpodautoscalers.autoscaling.myw.domain
+  name: predictivehybridpodautoscalers.autoscaling.myw.domain
 spec:
   group: autoscaling.myw.domain
   names:
-    kind: PredictiveHorizontalPodAutoscaler
-    listKind: PredictiveHorizontalPodAutoscalerList
-    plural: predictivehorizontalpodautoscalers
+    kind: PredictiveHybridPodAutoscaler
+    listKind: PredictiveHybridPodAutoscalerList
+    plural: predictivehybridpodautoscalers
     shortNames:
     - phpa
-    singular: predictivehorizontalpodautoscaler
+    singular: predictivehybridpodautoscaler
   scope: Namespaced
   versions:
   - name: v1
     schema:
       openAPIV3Schema:
-        description: PredictiveHorizontalPodAutoscaler is the Schema for the predictivehorizontalpodautoscalers
+        description: PredictiveHybridPodAutoscaler is the Schema for the predictivehybridpodautoscalers
           API
         properties:
           apiVersion:
@@ -36,8 +36,8 @@ spec:
           metadata:
             type: object
           spec:
-            description: PredictiveHorizontalPodAutoscalerSpec defines the desired
-              state of PredictiveHorizontalPodAutoscaler
+            description: PredictiveHybridPodAutoscalerSpec defines the desired state
+              of PredictiveHybridPodAutoscaler
             properties:
               cpuInitializationPeriod:
                 description: CpuInitializationPeriod defines the period seconds after
@@ -160,7 +160,7 @@ spec:
                   containerResourcePolicies:
                     description: Per-container resource policies.
                     items:
-                      description: Specifies container resource policy.
+                      description: Specify container resource policy.
                       properties:
                         containerName:
                           description: Name of the container or DefaultContainerResourcePolicy,
@@ -222,8 +222,8 @@ spec:
             - scaleTargetRef
             type: object
           status:
-            description: PredictiveHorizontalPodAutoscalerStatus defines the observed
-              state of PredictiveHorizontalPodAutoscaler
+            description: PredictiveHybridPodAutoscalerStatus defines the observed
+              state of PredictiveHybridPodAutoscaler
             properties:
               currentReplicas:
                 description: The current number of replicas of the target workload.
@@ -238,6 +238,26 @@ spec:
                   description: ResourceRequirements describes the compute resource
                     requirements.
                   properties:
+                    claims:
+                      description: "Claims lists the names of resources, defined in
+                        spec.resourceClaims, that are used by this container. \n This
+                        is an alpha field and requires enabling the DynamicResourceAllocation
+                        feature gate. \n This field is immutable."
+                      items:
+                        description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                        properties:
+                          name:
+                            description: Name must match the name of one entry in
+                              pod.spec.resourceClaims of the Pod where this field
+                              is used. It makes that resource available inside a container.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
                     limits:
                       additionalProperties:
                         anyOf:
@@ -264,17 +284,17 @@ spec:
                 description: The desired resource requirements for the target containers.
                 type: object
               lastHorizontalScaleTime:
-                description: The last time the PredictiveHorizontalPodAutoscaler horizontally
+                description: The last time the PredictiveHybridPodAutoscaler horizontally
                   scales, used by the autoscaler to control the scaling frequency.
                 format: date-time
                 type: string
               lastMonitorTime:
                 description: Refers to the time when the last metrics are fetched
-                  and used to update PredictiveHorizontalPodAutoscalerStatus.
+                  and used to update PredictiveHybridPodAutoscalerStatus.
                 format: date-time
                 type: string
               lastVerticalScaleTime:
-                description: The last time the PredictiveHorizontalPodAutoscaler vertically
+                description: The last time the PredictiveHybridPodAutoscaler vertically
                   scales, used by the autoscaler to control the scaling frequency
                   and ensure scaling completed.
                 format: date-time

@@ -90,7 +90,7 @@ type ScaleEvent struct {
 	Request *resource.Quantity `json:"request"`
 }
 
-// Specifies the mode of scaling.
+// Specify the mode of scaling.
 // Can only be one of the following modes.
 // +kubebuilder:validation:Enum=Horizontal;Vertical;Hybrid
 // +kubebuilder:default=Hybrid
@@ -107,7 +107,7 @@ const (
 	ScaleModeHybrid ScaleMode = "Hybrid"
 )
 
-// Specifies the policy of horizontal scaling.
+// Specify the policy of horizontal scaling.
 type HorizontalScalePolicy struct {
 	// Alpha for the DES algorithm. If not explicitly specified,
 	// the auto adjustment will be applied to alpha according to collected metrics.
@@ -130,11 +130,11 @@ const (
 	VerticalScalePolicyTypeAvailable VerticalScalePolicyType = "Available"
 
 	// Replace the old workload by new one using rolling update.
-	// A service pointing to the target workload is necessary to use this type.
+	// A service pointing to the target workload is necessary for using this type.
 	VerticalScalePolicyTypeSafe VerticalScalePolicyType = "Safe"
 )
 
-// Specifies container resource policy.
+// Specify container resource policy.
 type ContainerResourcePolicy struct {
 	// Name of the container or DefaultContainerResourcePolicy, in which
 	// case the policy is used by the containers that don't have their own
@@ -152,7 +152,7 @@ type ContainerResourcePolicy struct {
 	MaxAllowed v1.ResourceList `json:"maxAllowed,omitempty"`
 }
 
-// Specifies the policy of vertical scaling.
+// Specify the policy of vertical scaling.
 type VerticalScalePolicy struct {
 	// The policy type of vertical scaling.
 	// Possible values are:
@@ -179,8 +179,8 @@ type VerticalScalePolicy struct {
 	ServiceLabelSelector map[string]string `json:"serviceLabelSelector,omitempty"`
 }
 
-// PredictiveHorizontalPodAutoscalerSpec defines the desired state of PredictiveHorizontalPodAutoscaler
-type PredictiveHorizontalPodAutoscalerSpec struct {
+// PredictiveHybridPodAutoscalerSpec defines the desired state of PredictiveHybridPodAutoscaler
+type PredictiveHybridPodAutoscalerSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
@@ -260,8 +260,8 @@ type PredictiveHorizontalPodAutoscalerSpec struct {
 	ScaleHistoryLimit *int32 `json:"scaleHistoryLimit,omitempty"`
 }
 
-// PredictiveHorizontalPodAutoscalerStatus defines the observed state of PredictiveHorizontalPodAutoscaler
-type PredictiveHorizontalPodAutoscalerStatus struct {
+// PredictiveHybridPodAutoscalerStatus defines the observed state of PredictiveHybridPodAutoscaler
+type PredictiveHybridPodAutoscalerStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
@@ -282,17 +282,17 @@ type PredictiveHorizontalPodAutoscalerStatus struct {
 	// +optional
 	ScaleEventsList []ScaleEvent `json:"scaleEventsList"`
 
-	// The last time the PredictiveHorizontalPodAutoscaler horizontally scales, used by the
+	// The last time the PredictiveHybridPodAutoscaler horizontally scales, used by the
 	// autoscaler to control the scaling frequency.
 	// +optional
 	LastHorizontalScaleTime *metav1.Time `json:"lastHorizontalScaleTime,omitempty"`
 
-	// The last time the PredictiveHorizontalPodAutoscaler vertically scales, used by the
+	// The last time the PredictiveHybridPodAutoscaler vertically scales, used by the
 	// autoscaler to control the scaling frequency and ensure scaling completed.
 	// +optional
 	LastVerticalScaleTime *metav1.Time `json:"lastVerticalScaleTime,omitempty"`
 
-	// Refers to the time when the last metrics are fetched and used to update PredictiveHorizontalPodAutoscalerStatus.
+	// Refers to the time when the last metrics are fetched and used to update PredictiveHybridPodAutoscalerStatus.
 	// +optional
 	LastMonitorTime *metav1.Time `json:"lastMonitorTime,omitempty"`
 }
@@ -300,24 +300,24 @@ type PredictiveHorizontalPodAutoscalerStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=phpa
-// PredictiveHorizontalPodAutoscaler is the Schema for the predictivehorizontalpodautoscalers API
-type PredictiveHorizontalPodAutoscaler struct {
+// PredictiveHybridPodAutoscaler is the Schema for the predictivehybridpodautoscalers API
+type PredictiveHybridPodAutoscaler struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   PredictiveHorizontalPodAutoscalerSpec   `json:"spec,omitempty"`
-	Status PredictiveHorizontalPodAutoscalerStatus `json:"status,omitempty"`
+	Spec   PredictiveHybridPodAutoscalerSpec   `json:"spec,omitempty"`
+	Status PredictiveHybridPodAutoscalerStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// PredictiveHorizontalPodAutoscalerList contains a list of PredictiveHorizontalPodAutoscaler
-type PredictiveHorizontalPodAutoscalerList struct {
+// PredictiveHybridPodAutoscalerList contains a list of PredictiveHybridPodAutoscaler
+type PredictiveHybridPodAutoscalerList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []PredictiveHorizontalPodAutoscaler `json:"items"`
+	Items           []PredictiveHybridPodAutoscaler `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&PredictiveHorizontalPodAutoscaler{}, &PredictiveHorizontalPodAutoscalerList{})
+	SchemeBuilder.Register(&PredictiveHybridPodAutoscaler{}, &PredictiveHybridPodAutoscalerList{})
 }

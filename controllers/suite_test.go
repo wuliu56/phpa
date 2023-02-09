@@ -30,7 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	autoscalingv1 "myw.domain/autoscaling/api/v1"
+	autoscalingv1 "myw.domain/predictivehybridpodautoscaler/api/v1"
 	//+kubebuilder:scaffold:imports
 )
 

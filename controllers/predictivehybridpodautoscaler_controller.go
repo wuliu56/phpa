@@ -32,15 +32,15 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/rest"
 	"k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
-	autoscalingv1 "myw.domain/autoscaling/api/v1"
-	metricsclient "myw.domain/autoscaling/metrics"
+	phpav1 "myw.domain/predictivehybridpodautoscaler/api/v1"
+	metricsclient "myw.domain/predictivehybridpodautoscaler/metrics"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// PredictiveHorizontalPodAutoscalerReconciler reconciles a PredictiveHorizontalPodAutoscaler object
-type PredictiveHorizontalPodAutoscalerReconciler struct {
+// PredictiveHybridPodAutoscalerReconciler reconciles a PredictiveHybridPodAutoscaler object
+type PredictiveHybridPodAutoscalerReconciler struct {
 	Config *rest.Config
 	client.Client
 	Scheme *runtime.Scheme
@@ -53,9 +53,9 @@ type PredictiveHorizontalPodAutoscalerReconciler struct {
 	ScaleHistoryLimit             int32
 }
 
-//+kubebuilder:rbac:groups=autoscaling.myw.domain,resources=predictivehorizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=autoscaling.myw.domain,resources=predictivehorizontalpodautoscalers/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=autoscaling.myw.domain,resources=predictivehorizontalpodautoscalers/finalizers,verbs=update
+//+kubebuilder:rbac:groups=autoscaling.myw.domain,resources=predictivehybridpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=autoscaling.myw.domain,resources=predictivehybridpodautoscalers/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=autoscaling.myw.domain,resources=predictivehybridpodautoscalers/finalizers,verbs=update
 //+kubebuilder:rabc:groups=apps,resources=deployments,verbs=get;list;update
 //+kubebuilder:rabc:groups=apps,resources=deployments/status,verbs=get
 
@@ -68,20 +68,20 @@ type PredictiveHorizontalPodAutoscalerReconciler struct {
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.13.0/pkg/reconcile
-func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *PredictiveHybridPodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 	// TODO(user): your logic here
 
-	// Get the PredictiveHorizontalPodAutoscaler.
-	log.V(1).Info("fetching PredictiveHorizontalPodAutoscaler")
-	var phpa autoscalingv1.PredictiveHorizontalPodAutoscaler
+	// Get the PredictiveHybridPodAutoscaler.
+	log.V(1).Info("fetching PredictiveHybridPodAutoscaler")
+	var phpa phpav1.PredictiveHybridPodAutoscaler
 	if err := r.Get(ctx, req.NamespacedName, &phpa); err != nil {
-		log.Error(err, "unable to fetch PredictiveHorizontalPodAutoscaler")
+		log.Error(err, "unable to fetch PredictiveHybridPodAutoscaler")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	log.V(1).Info("successfully fetched PredictiveHorizontalPodAutoscaler", "PredictiveHorizontalPodAutoscaler", phpa.Namespace+"/"+phpa.Name)
+	log.V(1).Info("successfully fetched PredictiveHybridPodAutoscaler", "PredictiveHybridPodAutoscaler", phpa.Namespace+"/"+phpa.Name)
 
-	// Fetch fields of PredictiveHorizontalPodAutoscaler.
+	// Fetch fields of PredictiveHybridPodAutoscaler.
 	spec := phpa.Spec.DeepCopy()
 	status := phpa.Status.DeepCopy()
 	maxReplicas := spec.MaxReplicas
@@ -190,7 +190,7 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 	var scaleDecisionMaker ScaleDecisionMaker
 	// var scaleExecutor ScaleExecutor
 	switch spec.Mode {
-	case autoscalingv1.ScaleModeHorizontal:
+	case phpav1.ScaleModeHorizontal:
 		{
 			scaleDecisionMaker = HorizontalScaleDecisionMaker{
 				pods:                          podList.Items,
@@ -215,7 +215,7 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 			// 	lastScaleTime:                        phpa.Status.LastScaleTime,
 			// }
 		}
-	case autoscalingv1.ScaleModeVertical:
+	case phpav1.ScaleModeVertical:
 		{
 			scaleDecisionMaker = VerticalScaleDecisionMaker{
 				pods:                          podList.Items,
@@ -295,10 +295,10 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) Reconcile(ctx context.Cont
 }
 
 // recordScaleEvent records a scale event.
-func (r *PredictiveHorizontalPodAutoscalerReconciler) recordScaleEvent(phpa *autoscalingv1.PredictiveHorizontalPodAutoscaler, scaleEvent autoscalingv1.ScaleEvent) {
+func (r *PredictiveHybridPodAutoscalerReconciler) recordScaleEvent(phpa *phpav1.PredictiveHybridPodAutoscaler, scaleEvent phpav1.ScaleEvent) {
 	scaleEventsList := phpa.Status.ScaleEventsList
 	if scaleEventsList == nil {
-		phpa.Status.ScaleEventsList = make([]autoscalingv1.ScaleEvent, 0)
+		phpa.Status.ScaleEventsList = make([]phpav1.ScaleEvent, 0)
 	}
 	scaleEventNum := int32(len(scaleEventsList))
 	if scaleEventNum < r.ScaleHistoryLimit {
@@ -311,7 +311,7 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) recordScaleEvent(phpa *aut
 
 // Predict the metrics at the next interval using adaptive DES algorithm.
 // Return MetricStatus and possible error.
-func predictNextMetricStatusByADES(phpa *autoscalingv1.PredictiveHorizontalPodAutoscaler, totalRequest int64) (*autoscalingv1.MetricStatus, error) {
+func predictNextMetricStatusByADES(phpa *phpav1.PredictiveHybridPodAutoscaler, totalRequest int64) (*phpav1.MetricStatus, error) {
 	metricList := phpa.Status.MetricsList
 	if len(metricList) == 0 {
 		return nil, fmt.Errorf("there's no metric provided for prediction")
@@ -365,7 +365,7 @@ func predictNextMetricStatusByADES(phpa *autoscalingv1.PredictiveHorizontalPodAu
 	if metricName == corev1.ResourceMemory {
 		nextQuantity = resource.NewMilliQuantity(nextTotalValue, resource.BinarySI)
 	}
-	nextMetricStatus := autoscalingv1.MetricStatus{
+	nextMetricStatus := phpav1.MetricStatus{
 		Name:               metricName,
 		CurrentValue:       nextQuantity,
 		CurrentUtilization: nextTotalUtilization,
@@ -482,7 +482,7 @@ func calcCurrentResourceUtilization(resourceValue *resource.Quantity, request in
 // getMetricsStatus transforms the metrics fetched from metricsclient into the format of autoscalingv1.MetricStatus,
 // which container the name, value and utilization of pods resource.
 // This first removes metrics from unready and ignored pods.
-func (r *PredictiveHorizontalPodAutoscalerReconciler) getCurrentMetricStatus(pods []corev1.Pod, metrics metricsclient.PodMetricsInfo, request int64, resourceName corev1.ResourceName, mode autoscalingv1.ScaleMode, targetMetricSource *autoscalingv1.MetricSource) (currentMetricStatus *autoscalingv1.MetricStatus, metricLength int32) {
+func (r *PredictiveHybridPodAutoscalerReconciler) getCurrentMetricStatus(pods []corev1.Pod, metrics metricsclient.PodMetricsInfo, request int64, resourceName corev1.ResourceName, mode phpav1.ScaleMode, targetMetricSource *phpav1.MetricSource) (currentMetricStatus *phpav1.MetricStatus, metricLength int32) {
 	// Copy PodMetricsInfo from metrics and remove unready and ignored pods.
 	removedMetrics := make(metricsclient.PodMetricsInfo, len(metrics))
 	for i, k := range metrics {
@@ -494,9 +494,9 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) getCurrentMetricStatus(pod
 
 	var targetUtilization int32
 	switch mode {
-	case autoscalingv1.ScaleModeHorizontal:
+	case phpav1.ScaleModeHorizontal:
 		targetUtilization = targetMetricSource.UpperTargetUtilization
-	case autoscalingv1.ScaleModeVertical:
+	case phpav1.ScaleModeVertical:
 		targetUtilization = targetMetricSource.LowerTargetUtilization
 	}
 
@@ -523,7 +523,7 @@ func (r *PredictiveHorizontalPodAutoscalerReconciler) getCurrentMetricStatus(pod
 
 	currentValue := calcCurrentResourceValue(removedMetrics, resourceName)
 	currentUtilization := calcCurrentResourceUtilization(currentValue, request*int64(len(removedMetrics)), resourceName)
-	return &autoscalingv1.MetricStatus{
+	return &phpav1.MetricStatus{
 		Name:               resourceName,
 		CurrentValue:       currentValue,
 		CurrentUtilization: currentUtilization,
@@ -565,12 +565,12 @@ func getDeploymentSelector(deployment *appsv1.Deployment) *labels.Selector {
 	return &selector
 }
 
-// constructPHPAMetricsList construct the new PredictiveHorizontalPodAutoscaler.Status.MetricsList
-func constructPHPAMetricsList(phpa *autoscalingv1.PredictiveHorizontalPodAutoscaler, metricStatus *autoscalingv1.MetricStatus) {
+// constructPHPAMetricsList construct the new PredictiveHybridPodAutoscaler.Status.MetricsList
+func constructPHPAMetricsList(phpa *phpav1.PredictiveHybridPodAutoscaler, metricStatus *phpav1.MetricStatus) {
 	monitorWindow := phpa.Spec.MonitorWindowIntervalNum
 	metricsList := phpa.Status.MetricsList
 	if metricsList == nil {
-		phpa.Status.MetricsList = make([]autoscalingv1.MetricStatus, 0)
+		phpa.Status.MetricsList = make([]phpav1.MetricStatus, 0)
 	}
 	metricsListLength := int32(len(metricsList))
 	if metricsListLength < monitorWindow {
@@ -591,8 +591,8 @@ func getQuantityForTargetResource(resourceList corev1.ResourceList, targetResour
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *PredictiveHorizontalPodAutoscalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *PredictiveHybridPodAutoscalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&autoscalingv1.PredictiveHorizontalPodAutoscaler{}).
+		For(&phpav1.PredictiveHybridPodAutoscaler{}).
 		Complete(r)
 }

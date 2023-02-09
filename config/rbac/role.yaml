@@ -8,7 +8,7 @@ rules:
 - apiGroups:
   - autoscaling.myw.domain
   resources:
-  - predictivehorizontalpodautoscalers
+  - predictivehybridpodautoscalers
   verbs:
   - create
   - delete
@@ -20,13 +20,13 @@ rules:
 - apiGroups:
   - autoscaling.myw.domain
   resources:
-  - predictivehorizontalpodautoscalers/finalizers
+  - predictivehybridpodautoscalers/finalizers
   verbs:
   - update
 - apiGroups:
   - autoscaling.myw.domain
   resources:
-  - predictivehorizontalpodautoscalers/status
+  - predictivehybridpodautoscalers/status
   verbs:
   - get
   - patch

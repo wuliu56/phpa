@@ -4,4 +4,4 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     cert-manager.io/inject-ca-from: $(CERTIFICATE_NAMESPACE)/$(CERTIFICATE_NAME)
-  name: predictivehorizontalpodautoscalers.autoscaling.myw.domain
+  name: predictivehybridpodautoscalers.autoscaling.myw.domain

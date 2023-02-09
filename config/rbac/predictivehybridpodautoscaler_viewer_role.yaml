@@ -4,17 +4,17 @@ kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/name: clusterrole
-    app.kubernetes.io/instance: predictivehorizontalpodautoscaler-viewer-role
+    app.kubernetes.io/instance: predictivehybridpodautoscalers-viewer-role
     app.kubernetes.io/component: rbac
     app.kubernetes.io/created-by: autoscaling
     app.kubernetes.io/part-of: autoscaling
     app.kubernetes.io/managed-by: kustomize
-  name: predictivehorizontalpodautoscaler-viewer-role
+  name: predictivehybridpodautoscalers-viewer-role
 rules:
 - apiGroups:
   - autoscaling.myw.domain
   resources:
-  - predictivehorizontalpodautoscalers
+  - predictivehybridpodautoscalers
   verbs:
   - get
   - list
@@ -22,6 +22,6 @@ rules:
 - apiGroups:
   - autoscaling.myw.domain
   resources:
-  - predictivehorizontalpodautoscalers/status
+  - predictivehybridpodautoscalers/status
   verbs:
   - get

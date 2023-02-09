@@ -46,8 +46,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 
-	autoscalingv1 "myw.domain/autoscaling/api/v1"
-	"myw.domain/autoscaling/controllers"
+	phpav1 "myw.domain/predictivehybridpodautoscaler/api/v1"
+	"myw.domain/predictivehybridpodautoscaler/controllers"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -83,8 +83,8 @@ func (ra *PodResourceAllocator) Handle(ctx context.Context, req admission.Reques
 	}
 
 	// List phpa that matches the target deployment(replicaset/pod).
-	phpa := &autoscalingv1.PredictiveHorizontalPodAutoscaler{}
-	phpaList := &autoscalingv1.PredictiveHorizontalPodAutoscalerList{}
+	phpa := &phpav1.PredictiveHybridPodAutoscaler{}
+	phpaList := &phpav1.PredictiveHybridPodAutoscalerList{}
 	for _, ownerReference := range pod.GetOwnerReferences() {
 		if ownerReference.APIVersion == targetMiddleGV && ownerReference.Kind == targetMiddleKind {
 			rsNamespacedName := types.NamespacedName{
@@ -137,7 +137,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(autoscalingv1.AddToScheme(scheme))
+	utilruntime.Must(phpav1.AddToScheme(scheme))
 
 	//+kubebuilder:scaffold:scheme
 
@@ -188,7 +188,7 @@ func main() {
 	}
 
 	monitorInterval := time.Duration(int64(float64(syncPeriod.Nanoseconds()) * float64(SyncRatio)))
-	if err = (&controllers.PredictiveHorizontalPodAutoscalerReconciler{
+	if err = (&controllers.PredictiveHybridPodAutoscalerReconciler{
 		Config:                        ctrl.GetConfigOrDie(),
 		Client:                        mgr.GetClient(),
 		Scheme:                        mgr.GetScheme(),
@@ -198,7 +198,7 @@ func main() {
 		Tolerance:                     DefaultTolerance,
 		ScaleHistoryLimit:             DefaultScaleHistoryLimit,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PredictiveHorizontalPodAutoscaler")
+		setupLog.Error(err, "unable to create controller", "controller", "PredictiveHybridPodAutoscaler")
 		os.Exit(1)
 	}
 

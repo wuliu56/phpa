@@ -1,4 +1,4 @@
-module myw.domain/autoscaling/metrics
+module myw.domain/predictivehybridpodautoscaler/metrics
 
 go 1.19
 

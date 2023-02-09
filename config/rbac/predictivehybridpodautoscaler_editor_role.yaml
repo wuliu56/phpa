@@ -1,20 +1,20 @@
-# permissions for end users to edit predictivehorizontalpodautoscalers.
+# permissions for end users to edit predictivehybridpodautoscalers.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/name: clusterrole
-    app.kubernetes.io/instance: predictivehorizontalpodautoscaler-editor-role
+    app.kubernetes.io/instance: predictivehybridpodautoscalers-editor-role
     app.kubernetes.io/component: rbac
     app.kubernetes.io/created-by: autoscaling
     app.kubernetes.io/part-of: autoscaling
     app.kubernetes.io/managed-by: kustomize
-  name: predictivehorizontalpodautoscaler-editor-role
+  name: predictivehybridpodautoscalers-editor-role
 rules:
 - apiGroups:
   - autoscaling.myw.domain
   resources:
-  - predictivehorizontalpodautoscalers
+  - predictivehybridpodautoscalers
   verbs:
   - create
   - delete
@@ -26,6 +26,6 @@ rules:
 - apiGroups:
   - autoscaling.myw.domain
   resources:
-  - predictivehorizontalpodautoscalers/status
+  - predictivehybridpodautoscalers/status
   verbs:
   - get

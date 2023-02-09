@@ -6,8 +6,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	autoscalingv1 "myw.domain/autoscaling/api/v1"
-	metricsclient "myw.domain/autoscaling/metrics"
+	phpav1 "myw.domain/predictivehybridpodautoscaler/api/v1"
+	metricsclient "myw.domain/predictivehybridpodautoscaler/metrics"
 )
 
 var (
@@ -15,7 +15,7 @@ var (
 	DefaultMinMemoryRequestQuantity = resource.MustParse("50Mi")
 )
 
-// ScaleDecisionMaker makes scale decision.
+// Interface ScaleDecisionMaker makes scale decision.
 type ScaleDecisionMaker interface {
 	// Computes desired replicas.
 	computeDesiredReplicas() int32
@@ -27,12 +27,12 @@ type ScaleDecisionMaker interface {
 type HorizontalScaleDecisionMaker struct {
 	pods                          []corev1.Pod
 	metrics                       metricsclient.PodMetricsInfo
-	targetMetricSource            *autoscalingv1.MetricSource
+	targetMetricSource            *phpav1.MetricSource
 	currentReplicas               int32
 	minReplicas                   int32
 	maxReplicas                   int32
 	podRequestMilliValue          int64
-	nextMetricStatus              *autoscalingv1.MetricStatus
+	nextMetricStatus              *phpav1.MetricStatus
 	cpuInitializationPeriod       *time.Duration
 	delayOfInitialReadinessStatus *time.Duration
 	tolerance                     float32
@@ -148,12 +148,12 @@ type VerticalScaleDecisionMaker struct {
 	metrics                       metricsclient.PodMetricsInfo
 	currentReplicas               int32
 	podRequestMilliValue          int64
-	nextMetricStatus              *autoscalingv1.MetricStatus
-	targetMetricSource            *autoscalingv1.MetricSource
+	nextMetricStatus              *phpav1.MetricStatus
+	targetMetricSource            *phpav1.MetricSource
 	cpuInitializationPeriod       *time.Duration
 	delayOfInitialReadinessStatus *time.Duration
 	tolerance                     float32
-	verticalScalePolicy           autoscalingv1.VerticalScalePolicy
+	verticalScalePolicy           phpav1.VerticalScalePolicy
 }
 
 // This computes desired replicas.
