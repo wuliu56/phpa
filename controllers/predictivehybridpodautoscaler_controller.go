@@ -149,6 +149,10 @@ func (r *PredictiveHybridPodAutoscalerReconciler) Reconcile(ctx context.Context,
 		log.Error(err, "unable to list pods for target workload", "selector", selector)
 		return ctrl.Result{}, err
 	}
+	if len(podList.Items) == 0 {
+		log.V(1).Info("reconciling ends because of an empty podList")
+		return ctrl.Result{}, nil
+	}
 	log.V(1).Info("successfully listed pods for target workload", "selector", selector)
 
 	// Construct metricsClient and fetch metrics.
@@ -164,6 +168,7 @@ func (r *PredictiveHybridPodAutoscalerReconciler) Reconcile(ctx context.Context,
 	metrics, _, err := metricsClient.GetResourceMetric(ctx, resourceName, namespace, *selector, "")
 	if err != nil {
 		log.Error(err, "unable to fetch the current target metrics from metricsClient", "resource name", resourceName)
+		return ctrl.Result{}, err
 	}
 	log.V(1).Info("successfully fetched the current target metrics from metricsClient", "resource name", resourceName)
 

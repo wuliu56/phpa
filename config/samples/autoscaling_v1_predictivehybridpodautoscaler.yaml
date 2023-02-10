@@ -1,7 +1,7 @@
 apiVersion: autoscaling.myw.domain/v1
-kind: PredictiveHorizontalPodAutoscaler
+kind: PredictiveHybridPodAutoscaler
 metadata:
-  name: predictivehorizontalpodautoscaler-sample
+  name: predictivehybridpodautoscaler-sample
 spec:
   scaleTargetRef:
     kind: Deployment
