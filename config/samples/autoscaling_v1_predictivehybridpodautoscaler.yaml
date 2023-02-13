@@ -12,7 +12,7 @@ spec:
     lowerTargetUtilization: 60
     upperTargetUtilization: 80
   maxReplicas: 20
-  mode: Vertical
+  mode: Horizontal
   verticalScalePolicy:
     type: Normal
     evictionTolerance: 50

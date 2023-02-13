@@ -130,7 +130,7 @@ func (r *PredictiveHybridPodAutoscalerReconciler) Reconcile(ctx context.Context,
 	var deployment appsv1.Deployment
 	namespace := req.Namespace
 	deploymentName := scaleTargetRef.Name
-	targetGVR := "apps/v1/deployment"
+	targetGVR := "apps/v1/deployments"
 	log.V(1).Info("fetching the target workload", "target GVR", targetGVR, "namespace", namespace, "deployment name", deploymentName)
 	if err := r.Get(ctx, client.ObjectKey{
 		Namespace: namespace,
@@ -287,7 +287,7 @@ func (r *PredictiveHybridPodAutoscalerReconciler) Reconcile(ctx context.Context,
 		}
 	}
 
-	// Update the phpa status.
+	// Update phpa status.
 	if lastMonitorTime != nil {
 		log.V(0).Info("updating the phpa status", "time now", time.Now(), "time interval from last monitor", time.Since(lastMonitorTime.Time))
 	}

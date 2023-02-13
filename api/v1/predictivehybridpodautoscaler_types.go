@@ -86,8 +86,8 @@ type ScaleEvent struct {
 	//Count of desired replicas.
 	Replicas int32 `json:"replicas"`
 
-	//The desired pod request.
-	Request *resource.Quantity `json:"request"`
+	//The desired pod resource requirements.
+	Requirements map[string]v1.ResourceRequirements `json:"requirements,omitempty"`
 }
 
 // Specify the mode of scaling.

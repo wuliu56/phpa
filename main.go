@@ -161,7 +161,7 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	syncPeriod := DefaultSyncPeriod
+	var syncPeriod = DefaultSyncPeriod
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		MetricsBindAddress:     metricsAddr,
@@ -170,6 +170,7 @@ func main() {
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "9d05e851.myw.domain",
 		SyncPeriod:             &syncPeriod,
+
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly

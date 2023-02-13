@@ -279,10 +279,12 @@ func (in *ScaleEvent) DeepCopyInto(out *ScaleEvent) {
 		in, out := &in.Time, &out.Time
 		*out = (*in).DeepCopy()
 	}
-	if in.Request != nil {
-		in, out := &in.Request, &out.Request
-		x := (*in).DeepCopy()
-		*out = &x
+	if in.Requirements != nil {
+		in, out := &in.Requirements, &out.Requirements
+		*out = make(map[string]corev1.ResourceRequirements, len(*in))
+		for key, val := range *in {
+			(*out)[key] = *val.DeepCopy()
+		}
 	}
 }
 
